@@ -90,3 +90,5 @@ strims.gg deployment. Edit that file if pointing the app at a self-hosted instan
 - [docs/emotes.md](docs/emotes.md) — the animated-emote crop pipeline and modifier system.
 - [docs/gotchas.md](docs/gotchas.md) — RN/Android-specific pitfalls hit during development, and
   how to avoid re-hitting them.
+- [docs/releasing.md](docs/releasing.md) — versioning, changelog, and how to cut a tagged
+  GitHub Release. See also [CHANGELOG.md](CHANGELOG.md).
