@@ -7,16 +7,21 @@ import StreamsScreen from './src/screens/StreamsScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import TabBar, { type TabKey } from './src/components/TabBar';
 import TitleBar from './src/components/TitleBar';
+import UpdateModal from './src/components/UpdateModal';
 import { clearSession, loadSession } from './src/storage/session';
 import { configureBackgroundFetch } from './src/streams/backgroundFetch';
 import { refreshEmoteIndex } from './src/chat/emotes';
 import { refreshEmoteFrames } from './src/chat/emoteFrames';
+import { checkForUpdate, type AvailableUpdate } from './src/update/checkForUpdate';
+import { installUpdate } from './src/update/installUpdate';
 
 export default function App() {
   const [booting, setBooting] = useState(true);
   const [jwt, setJwt] = useState<string | null>(null);
   const [tab, setTab] = useState<TabKey>('chat');
   const [settingsVisible, setSettingsVisible] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState<AvailableUpdate | null>(null);
+  const [updateModalVisible, setUpdateModalVisible] = useState(false);
   // Bumped by the Settings "Refresh emotes" button — passed to ChatScreen
   // so it knows to re-fetch the (otherwise never-expiring, see emotes.ts)
   // emote index instead of only ever loading it once on mount.
@@ -31,6 +36,10 @@ export default function App() {
     // so there's no harm configuring it unconditionally, and it means
     // background fetch is already running by the time login completes.
     configureBackgroundFetch();
+    // Not gated on login either — the version check needs no auth, and
+    // checkForUpdate itself no-ops unless a day has passed since the last
+    // check, so this is cheap to call unconditionally on every launch.
+    checkForUpdate().then(setUpdateAvailable);
   }, []);
 
   const onLogout = async () => {
@@ -63,7 +72,11 @@ export default function App() {
               />
             ) : (
               <>
-                <TitleBar onPressSettings={() => setSettingsVisible(true)} />
+                <TitleBar
+                  onPressSettings={() => setSettingsVisible(true)}
+                  updateAvailable={updateAvailable}
+                  onPressUpdate={() => setUpdateModalVisible(true)}
+                />
                 <TabBar active={tab} onChange={setTab} />
                 {/* Both screens stay mounted once loaded — switching tabs
                     only toggles visibility, so chat's socket/catch-up state
@@ -88,6 +101,14 @@ export default function App() {
           </SafeAreaView>
         )}
       </View>
+      <UpdateModal
+        update={updateModalVisible ? updateAvailable : null}
+        onClose={() => setUpdateModalVisible(false)}
+        onConfirm={() => {
+          setUpdateModalVisible(false);
+          updateAvailable && installUpdate(updateAvailable);
+        }}
+      />
     </SafeAreaProvider>
   );
 }
