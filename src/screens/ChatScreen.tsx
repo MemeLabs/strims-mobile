@@ -383,29 +383,30 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
   // instead show a "More messages" pill they can tap when ready.
   const isNearBottomRef = useRef(true);
   const [hasNewMessages, setHasNewMessages] = useState(false);
-  // Set for the duration of an animated scrollToEnd (e.g. tapping "More
-  // messages"). While true, onListScroll ignores its own nearBottom
-  // calculation — mid-animation scroll events fire with the list still far
-  // from the bottom (the animation hasn't gotten there yet), and without
-  // this guard they'd immediately flip isNearBottomRef back to false right
-  // after we just set it true, silently re-freezing autoscroll before the
-  // animation even finishes.
+  // Set for the duration of any scrollToEnd call (animated or not). While
+  // true, onListScroll ignores its own nearBottom calculation — a
+  // scrollToEnd's own onScroll events can fire with contentSize still
+  // catching up to a just-changed message list (e.g. cached messages
+  // getting replaced by catch-up's fresher batch), reading as "far from
+  // bottom" for a frame or two even for a non-animated jump. Without this
+  // guard that flips isNearBottomRef back to false right after we just set
+  // it true, silently re-freezing autoscroll (or, worse, leaving the list
+  // short of the bottom with no "More messages" pill to recover with, since
+  // hasNewMessages was also just cleared).
   const scrollingToEndRef = useRef(false);
 
   const scrollToEnd = (animated: boolean) => {
-    scrollingToEndRef.current = animated;
+    scrollingToEndRef.current = true;
     listRef.current?.scrollToEnd({ animated });
     isNearBottomRef.current = true;
     setHasNewMessages(false);
     // onMomentumScrollEnd is the normal way this clears (see below), but it
-    // never fires if the list was already at (or nearly at) the bottom —
-    // scrollToEnd then causes no real momentum scroll, and without this
-    // fallback the guard would stay stuck on, freezing autoscroll for good.
-    if (animated) {
-      setTimeout(() => {
-        scrollingToEndRef.current = false;
-      }, 500);
-    }
+    // never fires for a non-animated jump (no momentum to speak of) or if
+    // the list was already at/near the bottom — without this fallback the
+    // guard would stay stuck on, freezing autoscroll for good.
+    setTimeout(() => {
+      scrollingToEndRef.current = false;
+    }, 500);
   };
 
   const NEAR_BOTTOM_THRESHOLD = 120;

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
 import ChatSource from './source';
 import { catchUp } from './api';
+import { loadCachedMessages, saveCachedMessages } from './messageCache';
 import { parseFrame } from './frame';
 import { DEFAULT_CONFIG } from '../config/env';
 import { makeLogger } from '../log';
@@ -48,6 +49,10 @@ export function useChat(jwt: string) {
   // can overwrite fresher state, and each one also bumps catchUpCount,
   // producing a visible repeated force-scroll ("stuck catching up" loop).
   const catchUpRequestId = useRef(0);
+  // True once real data (a catch-up response or a live message) has landed
+  // — guards the cached-messages load below from clobbering it if that
+  // async read resolves after the real thing already arrived.
+  const hasRealDataRef = useRef(false);
   const lastAppState = useRef<AppStateStatus>('active');
 
   const applyViewerState = useCallback((state: ViewerState) => {
@@ -72,6 +77,7 @@ export function useChat(jwt: string) {
         log.info(`discarding stale catch-up response (request ${requestId}, latest is ${catchUpRequestId.current})`);
         return;
       }
+      hasRealDataRef.current = true;
       setMe({ nick: meResponse.nick, features: meResponse.features });
       setMessages(decodeHistory(history.slice(-MAX_MESSAGES)));
       setViewerStates(
@@ -97,9 +103,11 @@ export function useChat(jwt: string) {
     source.on('CLOSE', () => setStatus('closed'));
 
     source.on('MSG', (data: ChatMessage) => {
+      hasRealDataRef.current = true;
       setMessages(prev => [...prev.slice(-(MAX_MESSAGES - 1)), data]);
     });
     source.on('PRIVMSG', (data: ChatMessage) => {
+      hasRealDataRef.current = true;
       setMessages(prev => [...prev.slice(-(MAX_MESSAGES - 1)), data]);
     });
     source.on('VIEWERSTATE', applyViewerState);
@@ -118,9 +126,15 @@ export function useChat(jwt: string) {
       runCatchUp();
     });
 
-    runCatchUp().finally(() => {
-      source.connect(DEFAULT_CONFIG.websocketUri, jwt);
-    });
+    // Connect the socket immediately rather than waiting on catch-up to
+    // finish first — the REST history fetch (several seconds sometimes,
+    // unlike the website's own near-instant reload) has no bearing on the
+    // websocket handshake; gating one on the other was pure added latency
+    // before the first live message could arrive. The 'OPEN' listener above
+    // still re-runs catch-up once connected, so history isn't lost — this
+    // one and that one just race, and whichever resolves first paints.
+    runCatchUp();
+    source.connect(DEFAULT_CONFIG.websocketUri, jwt);
 
     return () => {
       source.retryOnDisconnect = false;
@@ -128,6 +142,30 @@ export function useChat(jwt: string) {
       sourceRef.current = null;
     };
   }, [jwt, runCatchUp, applyViewerState]);
+
+  // Paints something real immediately on a cold start instead of a blank
+  // list while catch-up/connect (above) are still in flight — see
+  // messageCache.ts. Runs once, not per-jwt-change, since this is purely
+  // about the very first paint; a login switch gets fresh real data soon
+  // enough via the effect above that the stale cache isn't worth reloading.
+  useEffect(() => {
+    loadCachedMessages().then(cached => {
+      if (!hasRealDataRef.current && cached.length > 0) {
+        setMessages(cached);
+      }
+    });
+  }, []);
+
+  // Debounced rather than on every single message: a busy chat can add
+  // several messages a second, and persisting after each one is wasted
+  // I/O when only the latest write ever matters (see loadCachedMessages).
+  useEffect(() => {
+    if (messages.length === 0) {
+      return;
+    }
+    const id = setTimeout(() => saveCachedMessages(messages), 2000);
+    return () => clearTimeout(id);
+  }, [messages]);
 
   useEffect(() => {
     const onAppStateChange = (nextState: AppStateStatus) => {

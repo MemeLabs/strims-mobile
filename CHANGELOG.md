@@ -7,6 +7,35 @@ the release process itself.
 
 ## [Unreleased]
 
+### Added
+- Daily update check: a tappable "update available" badge next to the title bar links to a
+  modal with the release notes and downloads/installs the new APK directly.
+- Emote picker button next to Send: sorted by the user's own lifetime usage (persisted) then
+  by frequency in the current 200-message chat window, 5 rows visible with the rest reachable
+  by scrolling. Picking an emote inserts it at the cursor, or sends immediately if the input
+  is empty. The button itself previews the user's top emote, backed by a bundled LUL icon so
+  it has something to show before the network-loaded emote index resolves.
+- Streams tab: AngelThump cards now show "live for Xd Yh"/"Xh Ym"/"Xm" next to the watching
+  count. Thumbnails expire after 30 minutes so a card doesn't keep showing a stale frame.
+- First-time setup popup: fresh installs (no cached emote index yet) get a call-out that the
+  first connect is slower than normal, cleared for good once the first catch-up completes.
+- The last 200 chat messages are now cached to disk and repainted immediately on cold start,
+  and the websocket now connects in parallel with the REST catch-up instead of waiting for it
+  to finish first — catch-up alone could take several seconds. Together these make a cold
+  start feel close to instant instead of showing a blank "Connecting…" screen the whole time.
+
+### Fixed
+- Emote typeahead now requires 3+ typed characters (was 1), and its suggestion bar renders
+  animated emotes correctly cropped instead of the raw spritesheet.
+- Cropped emote frames were being written to Android's OS-reclaimable cache dir and trusted
+  forever once persisted — a cache sweep silently broke every animated emote until it
+  re-fetched and re-cropped from scratch. Frames now move to permanent app storage right
+  after cropping.
+- Chat autoscroll ("More messages" pill, and the keyboard opening) had a race where a
+  scrollToEnd's own follow-up scroll events could immediately re-freeze it right after
+  resuming (or, after the caching change above, leave a freshly cold-started chat short of
+  the bottom with no pill to recover with); all scrollToEnd calls now share one guarded path.
+
 ## [0.1.2] - 2026-08-23
 
 ### Added
