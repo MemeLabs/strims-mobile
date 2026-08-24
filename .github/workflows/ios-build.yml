@@ -1,0 +1,56 @@
+name: iOS build
+
+# Everything about this app has, until now, only ever been built and run on
+# Android — nobody on this project has a Mac, so this is the only way to
+# get real iOS build verification (pod install, native config, compiling)
+# rather than assuming source-level changes like Info.plist entries are
+# correct. See docs/gotchas.md's "iOS is unverified" note.
+#
+# Builds for the simulator only (no code signing, no device/App Store
+# deploy) — the goal is "does this compile," not producing an installable
+# artifact.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          # Gemfile lives at the repo root, not under ios/ — this action
+          # defaults to root already, but spelling it out since every other
+          # step in this job runs from ios/ and it'd be an easy mismatch to
+          # introduce later.
+          bundler-cache: true
+
+      - name: Install CocoaPods dependencies
+        working-directory: ios
+        run: bundle exec pod install
+
+      - name: Build for iOS Simulator
+        working-directory: ios
+        run: |
+          xcodebuild build \
+            -workspace StrimsMobile.xcworkspace \
+            -scheme StrimsMobile \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO
