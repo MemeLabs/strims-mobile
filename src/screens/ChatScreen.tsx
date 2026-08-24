@@ -30,6 +30,7 @@ import {
   setNickColor,
 } from '../chat/nickColors';
 import AnimatedEmote from '../components/AnimatedEmote';
+import { loadEmoteUsageCounts, recordEmoteUsage } from '../chat/emoteUsage';
 import { makeLogger } from '../log';
 import type { ChatMessage, ViewerChannel } from '../chat/types';
 
@@ -49,6 +50,8 @@ interface Props {
 // the sibling viewer-bar's alignment) rather than just growing that one
 // line — capping to roughly text-line height avoids the whole class of bug.
 const MAX_INLINE_EMOTE_HEIGHT = 22;
+// Matches the old suggestionEmote style's fixed size.
+const SUGGESTION_EMOTE_SIZE = 20;
 
 function capEmoteSize(emote: EmoteInfo): { width: number; height: number } {
   if (emote.height <= MAX_INLINE_EMOTE_HEIGHT) {
@@ -245,6 +248,8 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
   const [emotes, setEmotes] = useState<Map<string, EmoteInfo>>(new Map());
   const [nickColors, setNickColors] = useState<Map<string, string>>(new Map());
   const [colorPickerNick, setColorPickerNick] = useState<string | null>(null);
+  const [emotePickerVisible, setEmotePickerVisible] = useState(false);
+  const [emoteUsageCounts, setEmoteUsageCounts] = useState<Map<string, number>>(new Map());
   const [focusedNick, setFocusedNick] = useState<string | null>(null);
   const [tooltipVisible, setTooltipVisible] = useState(false);
   const tooltipSeenRef = useRef(true); // assume seen until we know otherwise, to avoid a flash
@@ -266,6 +271,10 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
     // App.tsx) makes this effect re-run and pick up the freshly-refreshed
     // index that loadEmoteIndex() now returns.
   }, [emoteRefreshKey]);
+
+  useEffect(() => {
+    loadEmoteUsageCounts().then(setEmoteUsageCounts);
+  }, []);
 
   useEffect(() => {
     loadNickColors().then(setNickColors);
@@ -301,6 +310,37 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
 
   const displayItems = useMemo(() => groupCombos(messages, emotes), [messages, emotes]);
 
+  // "Seen in chat" half of the emote picker's sort — counted across the
+  // same 200-message window useChat itself caps `messages` to (MAX_MESSAGES
+  // in useChat.ts), so this is naturally "recent", not a lifetime tally.
+  const emoteWindowCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const m of messages) {
+      for (const word of m.data.split(/\s+/)) {
+        const [base] = word.split(':');
+        if (emotes.has(base)) {
+          counts.set(base, (counts.get(base) ?? 0) + 1);
+        }
+      }
+    }
+    return counts;
+  }, [messages, emotes]);
+
+  // The picker button itself shows the user's own most-used emote (falling
+  // back to LUL before there's any usage data yet) — a preview of what
+  // tapping it gets you, and doubles as a one-glance "your go-to" callout.
+  const topEmoteName = useMemo(() => {
+    let best: string | null = null;
+    let bestCount = 0;
+    for (const [name, count] of emoteUsageCounts) {
+      if (count > bestCount) {
+        best = name;
+        bestCount = count;
+      }
+    }
+    return best ?? 'LUL';
+  }, [emoteUsageCounts]);
+
   const activeWord = findWordAtCursor(draft, selection.start);
   const suggestions: Suggestion[] =
     selection.start === selection.end
@@ -325,17 +365,38 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
   // instead show a "More messages" pill they can tap when ready.
   const isNearBottomRef = useRef(true);
   const [hasNewMessages, setHasNewMessages] = useState(false);
+  // Set for the duration of an animated scrollToEnd (e.g. tapping "More
+  // messages"). While true, onListScroll ignores its own nearBottom
+  // calculation — mid-animation scroll events fire with the list still far
+  // from the bottom (the animation hasn't gotten there yet), and without
+  // this guard they'd immediately flip isNearBottomRef back to false right
+  // after we just set it true, silently re-freezing autoscroll before the
+  // animation even finishes.
+  const scrollingToEndRef = useRef(false);
 
   const scrollToEnd = (animated: boolean) => {
+    scrollingToEndRef.current = animated;
     listRef.current?.scrollToEnd({ animated });
     isNearBottomRef.current = true;
     setHasNewMessages(false);
+    // onMomentumScrollEnd is the normal way this clears (see below), but it
+    // never fires if the list was already at (or nearly at) the bottom —
+    // scrollToEnd then causes no real momentum scroll, and without this
+    // fallback the guard would stay stuck on, freezing autoscroll for good.
+    if (animated) {
+      setTimeout(() => {
+        scrollingToEndRef.current = false;
+      }, 500);
+    }
   };
 
-  const NEAR_BOTTOM_THRESHOLD = 80;
+  const NEAR_BOTTOM_THRESHOLD = 120;
   const onListScroll = (e: {
     nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } };
   }) => {
+    if (scrollingToEndRef.current) {
+      return;
+    }
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
     const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y;
     const nearBottom = distanceFromBottom < NEAR_BOTTOM_THRESHOLD;
@@ -351,7 +412,13 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
     const showSub = Keyboard.addListener(showEvent, e => {
       log.info(`${showEvent} height=${e.endCoordinates?.height}`);
       setKeyboardHeight(e.endCoordinates?.height ?? 0);
-      listRef.current?.scrollToEnd({ animated: true });
+      // Goes through the same scrollToEnd used by "More messages" (not a
+      // bare listRef call) so its scrollingToEndRef guard applies here too
+      // — without it, this animated scroll's own mid-flight onScroll events
+      // race isNearBottomRef exactly like the "More messages" bug did:
+      // sometimes flipping it back to false before the scroll finishes and
+      // popping the pill right back up instead of just landing at bottom.
+      scrollToEnd(true);
     });
     const hideSub = Keyboard.addListener(hideEvent, () => {
       log.info(hideEvent);
@@ -380,14 +447,31 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
     return () => clearTimeout(id);
   }, [catchUpCount]);
 
-  const onSend = () => {
-    const text = draft.trim();
+  const onSend = (override?: string) => {
+    const text = override ?? draft.trim();
     if (!text) {
       return;
     }
     sendMessage(text);
+    recordEmoteUsage(text, emotes).then(setEmoteUsageCounts);
     setDraft('');
     setSelection({ start: 0, end: 0 });
+  };
+
+  // Tapping an emote in the picker: an empty box means the user opened the
+  // picker specifically to send that one emote, so send it immediately
+  // rather than making them tap Send too; otherwise it's a normal insert at
+  // the cursor, same as picking an autocomplete suggestion.
+  const onPickEmote = (name: string) => {
+    setEmotePickerVisible(false);
+    if (draft.trim() === '') {
+      onSend(name);
+      return;
+    }
+    const { text, cursor } = applyCompletion(draft, { start: selection.start, end: selection.start }, name);
+    setDraft(text);
+    setSelection({ start: cursor, end: cursor });
+    inputRef.current?.focus();
   };
 
   // A reconnect while we already have history on screen is invisible to the
@@ -438,6 +522,9 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
             }
           }}
           onScroll={onListScroll}
+          onMomentumScrollEnd={() => {
+            scrollingToEndRef.current = false;
+          }}
           scrollEventThrottle={100}
           contentContainerStyle={styles.listContent}
         />
@@ -460,9 +547,10 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
                 onPress={() => applySuggestion(s)}
               >
                 {s.isEmote && emotes.get(s.text) && (
-                  <Image
-                    source={{ uri: emotes.get(s.text)!.uri }}
-                    style={styles.suggestionEmote}
+                  <AnimatedEmote
+                    emote={emotes.get(s.text)!}
+                    width={SUGGESTION_EMOTE_SIZE}
+                    height={SUGGESTION_EMOTE_SIZE}
                     accessibilityLabel={s.text}
                   />
                 )}
@@ -488,10 +576,17 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
             onSelectionChange={e => setSelection(e.nativeEvent.selection)}
             placeholder="Message #strims"
             placeholderTextColor="#5c6273"
-            onSubmitEditing={onSend}
+            onSubmitEditing={() => onSend()}
             returnKeyType="send"
           />
-          <TouchableOpacity style={styles.sendButton} onPress={onSend}>
+          <TouchableOpacity style={styles.emoteButton} onPress={() => setEmotePickerVisible(true)}>
+            {emotes.get(topEmoteName) ? (
+              <AnimatedEmote emote={emotes.get(topEmoteName)!} width={24} height={24} accessibilityLabel={topEmoteName} />
+            ) : (
+              <Text style={styles.emoteButtonText}>{'☺'}</Text>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.sendButton} onPress={() => onSend()}>
             <Text style={styles.sendButtonText}>Send</Text>
           </TouchableOpacity>
         </View>
@@ -504,6 +599,14 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
         </View>
       </Modal>
       <NickColorPicker nick={colorPickerNick} onPick={pickNickColor} onDismiss={() => setColorPickerNick(null)} />
+      <EmotePicker
+        visible={emotePickerVisible}
+        emotes={emotes}
+        usageCounts={emoteUsageCounts}
+        windowCounts={emoteWindowCounts}
+        onPick={onPickEmote}
+        onDismiss={() => setEmotePickerVisible(false)}
+      />
     </View>
   );
 }
@@ -546,6 +649,66 @@ function NickColorPicker({ nick, onPick, onDismiss }: NickColorPickerProps) {
             <Text style={styles.colorPickerResetText}>Reset to default</Text>
           </TouchableOpacity>
         </View>
+      </TouchableOpacity>
+    </Modal>
+  );
+}
+
+interface EmotePickerProps {
+  visible: boolean;
+  emotes: Map<string, EmoteInfo>;
+  usageCounts: Map<string, number>;
+  windowCounts: Map<string, number>;
+  onPick: (name: string) => void;
+  onDismiss: () => void;
+}
+
+// Fixed-height list — 5 rows visible, rest reachable by scrolling — rather
+// than sizing to content, so the picker doesn't balloon to the height of
+// the entire emote set (currently 1000+) every time it opens.
+const EMOTE_PICKER_ROW_HEIGHT = 44;
+const EMOTE_PICKER_VISIBLE_ROWS = 5;
+
+function EmotePicker({ visible, emotes, usageCounts, windowCounts, onPick, onDismiss }: EmotePickerProps) {
+  // Primary: the user's own lifetime usage (emoteUsage.ts) — a strong,
+  // personal signal of what they actually reach for. Secondary: how often
+  // it's shown up in the current 200-message window (see useChat's
+  // MAX_MESSAGES) — a live "what's popular right now" tiebreaker for
+  // emotes the user hasn't used from this app yet. Alphabetical beyond that
+  // just keeps the order stable rather than shuffling on every render.
+  const sortedNames = useMemo(() => {
+    const names = [...emotes.keys()];
+    names.sort((a, b) => {
+      const usageDiff = (usageCounts.get(b) ?? 0) - (usageCounts.get(a) ?? 0);
+      if (usageDiff !== 0) {
+        return usageDiff;
+      }
+      const windowDiff = (windowCounts.get(b) ?? 0) - (windowCounts.get(a) ?? 0);
+      if (windowDiff !== 0) {
+        return windowDiff;
+      }
+      return a.localeCompare(b);
+    });
+    return names;
+  }, [emotes, usageCounts, windowCounts]);
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss}>
+      <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={onDismiss}>
+        <TouchableOpacity activeOpacity={1} style={styles.emotePickerCard} onPress={() => {}}>
+          <Text style={styles.emotePickerTitle}>Emotes</Text>
+          <FlatList
+            data={sortedNames}
+            keyExtractor={name => name}
+            style={{ height: EMOTE_PICKER_ROW_HEIGHT * EMOTE_PICKER_VISIBLE_ROWS }}
+            renderItem={({ item: name }) => (
+              <TouchableOpacity style={styles.emotePickerRow} onPress={() => onPick(name)}>
+                <AnimatedEmote emote={emotes.get(name)!} width={28} height={28} accessibilityLabel={name} />
+                <Text style={styles.emotePickerRowText}>{name}</Text>
+              </TouchableOpacity>
+            )}
+          />
+        </TouchableOpacity>
       </TouchableOpacity>
     </Modal>
   );
@@ -606,6 +769,10 @@ const styles = StyleSheet.create({
   colorSwatch: { width: 36, height: 36, borderRadius: 18, borderWidth: 1, borderColor: '#00000033' },
   colorPickerReset: { marginTop: 16, alignItems: 'center' },
   colorPickerResetText: { color: '#5c6273', fontSize: 13 },
+  emotePickerCard: { backgroundColor: '#1c1e27', borderRadius: 10, padding: 16, width: 260 },
+  emotePickerTitle: { color: '#e6e8f0', fontSize: 15, fontWeight: '600', marginBottom: 8 },
+  emotePickerRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 },
+  emotePickerRowText: { color: '#e6e8f0', fontSize: 14 },
   keyboardArea: { flex: 1 },
   list: { flex: 1 },
   statusBar: { backgroundColor: '#3a2f1f', paddingVertical: 4, alignItems: 'center' },
@@ -661,12 +828,12 @@ const styles = StyleSheet.create({
   suggestionChip: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 4,
     backgroundColor: '#262833',
     borderRadius: 12,
     paddingHorizontal: 10,
     paddingVertical: 4,
   },
-  suggestionEmote: { width: 20, height: 20, marginRight: 4 },
   suggestionText: { color: '#c6c9d4', fontSize: 13 },
   inputRow: {
     flexDirection: 'row',
@@ -684,6 +851,15 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     marginRight: 8,
   },
+  emoteButton: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 40,
+    borderRadius: 6,
+    backgroundColor: '#262833',
+    marginRight: 8,
+  },
+  emoteButtonText: { color: '#c6c9d4', fontSize: 20 },
   sendButton: {
     justifyContent: 'center',
     paddingHorizontal: 14,
