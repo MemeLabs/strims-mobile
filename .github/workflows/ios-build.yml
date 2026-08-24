@@ -34,6 +34,11 @@ jobs:
 
       - uses: ruby/setup-ruby@v1
         with:
+          # The Gemfile only sets a floor (`ruby ">= 2.6.10"`), and there's
+          # no .ruby-version file for this action to fall back to — without
+          # an explicit version here it fails immediately with no Ruby
+          # selected at all.
+          ruby-version: '3.3'
           # Gemfile lives at the repo root, not under ios/ — this action
           # defaults to root already, but spelling it out since every other
           # step in this job runs from ios/ and it'd be an easy mismatch to
