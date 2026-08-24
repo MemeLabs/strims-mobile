@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import ImageEditor from '@react-native-community/image-editor';
+import ReactNativeBlobUtil from 'react-native-blob-util';
 import { makeLogger } from '../log';
 import type { EmoteInfo } from './emotes';
 
@@ -30,6 +31,26 @@ async function writePersistedFrames(key: string, frames: string[]): Promise<void
     await AsyncStorage.setItem(FRAME_STORAGE_PREFIX + key, JSON.stringify(frames));
   } catch (err) {
     log.warn(`failed to persist frames for ${key}`, err);
+  }
+}
+
+// Cropped frames are local `file://` paths — see cropFrame's move into
+// PERSIST_DIR for why these are expected to survive indefinitely. This is
+// just a defense-in-depth check (e.g. the user clearing app storage by hand
+// outside of Settings' "Refresh emotes"), not the normal path: without it, a
+// missing file would mean that emote silently never renders again until an
+// explicit refresh. Static (non-animated) emotes persist their original
+// remote `uri` instead (see cropAllFrames's `!animation` branch) and don't
+// need this check.
+async function framesStillExist(frames: string[]): Promise<boolean> {
+  const first = frames[0];
+  if (!first || !first.startsWith('file://')) {
+    return true;
+  }
+  try {
+    return await ReactNativeBlobUtil.fs.exists(first.replace('file://', ''));
+  } catch {
+    return false;
   }
 }
 
@@ -69,12 +90,66 @@ async function fetchAsDataUri(uri: string): Promise<string> {
   });
 }
 
-async function cropFrame(uri: string, frameIndex: number, framePixelWidth: number, framePixelHeight: number): Promise<string> {
+// @react-native-community/image-editor always writes its crop output under
+// the OS-managed cache dir, which Android is free to reclaim under storage
+// pressure without telling us (confirmed empirically — see git history).
+// Moving each frame out to the app's own persistent files dir right after
+// cropping means a given emote is genuinely fetched-and-cropped once, full
+// stop, rather than silently going blank and re-cropping (re-spending the
+// data cost of fetchAsDataUri) whenever the OS decides to sweep its cache.
+const PERSIST_DIR = `${ReactNativeBlobUtil.fs.dirs.DocumentDir}/emote-frames`;
+let persistDirReady: Promise<void> | null = null;
+
+function ensurePersistDir(): Promise<void> {
+  if (!persistDirReady) {
+    persistDirReady = ReactNativeBlobUtil.fs.exists(PERSIST_DIR).then(exists => {
+      if (!exists) {
+        return ReactNativeBlobUtil.fs.mkdir(PERSIST_DIR);
+      }
+    });
+  }
+  return persistDirReady;
+}
+
+// Cheap non-cryptographic hash (djb2) — just needs to turn an emote key
+// (which contains a full URL, unsafe as a filename) into a short, stable,
+// filesystem-safe id.
+function hashKey(key: string): string {
+  let hash = 5381;
+  for (let i = 0; i < key.length; i++) {
+    hash = (hash * 33) ^ key.charCodeAt(i);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+async function cropFrame(
+  uri: string,
+  frameIndex: number,
+  framePixelWidth: number,
+  framePixelHeight: number,
+  destName: string,
+): Promise<string> {
   const result = await ImageEditor.cropImage(uri, {
     offset: { x: frameIndex * framePixelWidth, y: 0 },
     size: { width: framePixelWidth, height: framePixelHeight },
   });
-  return result.uri;
+  await ensurePersistDir();
+  const destPath = `${PERSIST_DIR}/${destName}-${frameIndex}.jpg`;
+  const tempPath = result.uri.replace('file://', '');
+  try {
+    await ReactNativeBlobUtil.fs.mv(tempPath, destPath);
+    return `file://${destPath}`;
+  } catch (err) {
+    // A failure here (observed under high concurrency on very large
+    // spritesheets, e.g. catJAM's 158 frames — native renameTo() sometimes
+    // just fails) shouldn't sink the *whole* emote back to cropAllFrames'
+    // caller, which would fall back to the single uncropped sheet — the
+    // exact bug this module exists to avoid. Degrade one frame at a time
+    // instead: keep using its OS-cache-dir temp file for this session; it
+    // just won't survive to the next one, so it re-crops then like normal.
+    log.warn(`failed to persist cropped frame ${frameIndex} of ${destName}, using session-only copy`, err);
+    return result.uri;
+  }
 }
 
 // Firing every frame's crop at once (e.g. catJAM has 158) overwhelms the
@@ -82,7 +157,7 @@ async function cropFrame(uri: string, frameIndex: number, framePixelWidth: numbe
 // after the first few frames. Cap how many crop calls are in flight at once.
 const CROP_CONCURRENCY = 8;
 
-async function cropAllFrames(emote: EmoteInfo): Promise<string[]> {
+async function cropAllFrames(key: string, emote: EmoteInfo): Promise<string[]> {
   const { animation } = emote;
   if (!animation) {
     return [emote.uri];
@@ -92,12 +167,13 @@ async function cropAllFrames(emote: EmoteInfo): Promise<string[]> {
   // is `scale`x the logical width/height we render at (see EmoteInfo).
   const framePixelWidth = emote.width * emote.scale;
   const framePixelHeight = emote.height * emote.scale;
+  const destName = hashKey(key);
   const frames = new Array<string>(animation.frameCount);
   let next = 0;
   const worker = async () => {
     while (next < animation.frameCount) {
       const i = next++;
-      frames[i] = await cropFrame(sourceUri, i, framePixelWidth, framePixelHeight);
+      frames[i] = await cropFrame(sourceUri, i, framePixelWidth, framePixelHeight, destName);
     }
   };
   await Promise.all(Array.from({ length: Math.min(CROP_CONCURRENCY, animation.frameCount) }, worker));
@@ -123,10 +199,10 @@ export function getEmoteFrames(name: string, emote: EmoteInfo): Promise<string[]
   if (!cached) {
     cached = (async () => {
       const persisted = await readPersistedFrames(key);
-      if (persisted) {
+      if (persisted && (await framesStillExist(persisted))) {
         return persisted;
       }
-      const frames = await cropAllFrames(emote);
+      const frames = await cropAllFrames(key, emote);
       await writePersistedFrames(key, frames);
       return frames;
     })().catch(err => {
@@ -156,4 +232,16 @@ export async function refreshEmoteFrames(): Promise<void> {
   } catch (err) {
     log.warn('failed to clear persisted emote frames', err);
   }
+  // The actual cropped-frame files live outside AsyncStorage (see
+  // PERSIST_DIR) — without this they'd become orphaned dead weight on disk
+  // every time this runs, since nothing else ever references them once the
+  // AsyncStorage keys above are gone.
+  try {
+    if (await ReactNativeBlobUtil.fs.exists(PERSIST_DIR)) {
+      await ReactNativeBlobUtil.fs.unlink(PERSIST_DIR);
+    }
+  } catch (err) {
+    log.warn('failed to clear persisted emote frame files', err);
+  }
+  persistDirReady = null;
 }

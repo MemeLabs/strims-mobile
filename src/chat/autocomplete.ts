@@ -33,7 +33,7 @@ export interface Suggestion {
   isEmote: boolean;
 }
 
-const MIN_WORD_LENGTH = 1;
+const MIN_WORD_LENGTH = 3;
 const MAX_RESULTS = 20;
 
 // Prefix match, case-insensitive, exact matches excluded (nothing to
