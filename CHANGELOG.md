@@ -7,6 +7,12 @@ the release process itself.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-23
+
+### Added
+- Casting a stream now shows a "Cast from" region picker (SFO/AMS/FRA/NYC/SGP) instead of
+  always using AngelThump's default-routed edge server.
+
 ## [0.1.1] - 2026-08-23
 
 ### Fixed
