@@ -17,7 +17,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useChat } from '../chat/useChat';
-import { loadEmoteIndex, type EmoteInfo } from '../chat/emotes';
+import { getEmoteIndexUpdatedAt, loadEmoteIndex, type EmoteInfo } from '../chat/emotes';
 import { formatMessage, isGreenText, isMention } from '../chat/messageFormat';
 import { viewerChannelColor } from '../chat/viewerColor';
 import { applyCompletion, buildSuggestions, findWordAtCursor, type Suggestion } from '../chat/autocomplete';
@@ -253,6 +253,13 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
   const [focusedNick, setFocusedNick] = useState<string | null>(null);
   const [tooltipVisible, setTooltipVisible] = useState(false);
   const tooltipSeenRef = useRef(true); // assume seen until we know otherwise, to avoid a flash
+  // Shown once, only on a genuinely fresh install (no persisted emote index
+  // yet — see getEmoteIndexUpdatedAt) — the first connect is meaningfully
+  // slower than every one after it, since there's no cached emote index to
+  // fall back on while chat-gui's full emotes.<hash>.css gets fetched and
+  // parsed from scratch. Cleared for good the first time catch-up actually
+  // finishes (messages.length > 0 below), never shown again after that.
+  const [firstTimeSetupVisible, setFirstTimeSetupVisible] = useState(false);
   const inputRef = useRef<TextInput>(null);
 
   useEffect(() => {
@@ -265,12 +272,23 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
   }, [status]);
 
   useEffect(() => {
+    getEmoteIndexUpdatedAt().then(updatedAt => {
+      if (updatedAt === null) {
+        setFirstTimeSetupVisible(true);
+      }
+    });
     loadEmoteIndex().then(setEmotes);
     // emoteRefreshKey has no effect the first time this runs (mount) —
     // it's only here so a later bump (Settings → Refresh emotes, see
     // App.tsx) makes this effect re-run and pick up the freshly-refreshed
     // index that loadEmoteIndex() now returns.
   }, [emoteRefreshKey]);
+
+  useEffect(() => {
+    if (messages.length > 0) {
+      setFirstTimeSetupVisible(false);
+    }
+  }, [messages.length]);
 
   useEffect(() => {
     loadEmoteUsageCounts().then(setEmoteUsageCounts);
@@ -583,7 +601,11 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
             {emotes.get(topEmoteName) ? (
               <AnimatedEmote emote={emotes.get(topEmoteName)!} width={24} height={24} accessibilityLabel={topEmoteName} />
             ) : (
-              <Text style={styles.emoteButtonText}>{'☺'}</Text>
+              // Bundled with the app (not fetched) so the button has something
+              // to show immediately on a cold start, before the network-loaded
+              // emote index resolves — same LUL that'd show anyway once it does,
+              // just not left blank/placeholder-text in the meantime.
+              <Image source={require('../assets/emotes/LUL.png')} style={styles.emoteButtonFallback} />
             )}
           </TouchableOpacity>
           <TouchableOpacity style={styles.sendButton} onPress={() => onSend()}>
@@ -595,6 +617,13 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
         <View style={styles.tooltipOverlay} pointerEvents="none">
           <View style={styles.tooltip}>
             <Text style={styles.tooltipText}>Long-press a name to change its color</Text>
+          </View>
+        </View>
+      </Modal>
+      <Modal visible={firstTimeSetupVisible} transparent animationType="fade">
+        <View style={styles.tooltipOverlay} pointerEvents="none">
+          <View style={styles.tooltip}>
+            <Text style={styles.tooltipText}>Setting things up — first load takes a bit longer while emotes download</Text>
           </View>
         </View>
       </Modal>
@@ -760,8 +789,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 16,
     paddingVertical: 12,
+    maxWidth: '80%',
   },
-  tooltipText: { color: '#ffffff', fontSize: 15, fontWeight: '600' },
+  tooltipText: { color: '#ffffff', fontSize: 15, fontWeight: '600', textAlign: 'center' },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   colorPicker: { backgroundColor: '#1c1e27', borderRadius: 10, padding: 16, width: 280 },
   colorPickerTitle: { color: '#e6e8f0', fontSize: 15, fontWeight: '600', marginBottom: 12 },
@@ -859,7 +889,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#262833',
     marginRight: 8,
   },
-  emoteButtonText: { color: '#c6c9d4', fontSize: 20 },
+  emoteButtonFallback: { width: 24, height: 24 },
   sendButton: {
     justifyContent: 'center',
     paddingHorizontal: 14,
