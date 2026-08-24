@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import GoogleCast, { CastButton, useRemoteMediaClient } from 'react-native-google-cast';
 import { viewerChannelColor } from '../chat/viewerColor';
-import { fetchStreamList } from '../streams/api';
+import { fetchAngelThumpStartTimes, fetchStreamList } from '../streams/api';
 import { ANGELTHUMP_REGIONS, resolveAngelThumpHls } from '../streams/hlsResolver';
 import { followKey, loadFollows, toggleFollow } from '../streams/follows';
 import { ensureNotificationPermission } from '../streams/notifications';
@@ -29,10 +29,43 @@ const log = makeLogger('streams-screen');
 // (Background.js startPolling, default 2 minutes).
 const POLL_INTERVAL_MS = 2 * 60 * 1000;
 
+// Thumbnail URLs are stable per channel (e.g.
+// thumbnail.angelthump.com/thumbnails/batpearson.jpeg) — same URL every
+// poll — so without a cache-buster, Image would happily keep showing
+// whatever frame it first cached instead of ever fetching a newer one.
+// Deliberately no dedicated timer for this: the bucket below is just
+// computed fresh at render time, so it only ever advances as a side effect
+// of the screen re-rendering while the user's actually looking at it (e.g.
+// the existing 2-minute poll) — nothing keeps ticking or fetching in the
+// background just to keep thumbnails warm.
+const THUMBNAIL_TTL_MS = 30 * 60 * 1000;
+
+function withThumbnailCacheBust(url: string): string {
+  const bucket = Math.floor(Date.now() / THUMBNAIL_TTL_MS);
+  return `${url}${url.includes('?') ? '&' : '?'}_=${bucket}`;
+}
+
 function sortStreams(streams: Stream[]): Stream[] {
   // rustlers (strims-side viewer count) is what the extension sorts and
   // displays by, not the raw upstream `viewers` count.
   return [...streams].sort((a, b) => b.rustlers - a.rustlers);
+}
+
+// "Live for" — days/hours truncated (not rounded), matching how every other
+// "time ago" style label on the site behaves. Below an hour, minutes alone
+// are precise enough that seconds would just be noise.
+function formatUptime(startTime: number): string {
+  const elapsedMinutes = Math.max(0, Math.floor((Date.now() - startTime) / 60000));
+  const days = Math.floor(elapsedMinutes / 1440);
+  const hours = Math.floor((elapsedMinutes % 1440) / 60);
+  const minutes = elapsedMinutes % 60;
+  if (days > 0) {
+    return `${days}d ${hours}h`;
+  }
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  return `${minutes}m`;
 }
 
 // The classic Chromecast glyph — a screen outline with wifi-style signal
@@ -67,9 +100,12 @@ interface StreamCardProps {
   onCast: (stream: Stream) => void;
   casting: boolean;
   castActive: boolean;
+  // AngelThump-only (see fetchAngelThumpStartTimes) — no other service this
+  // app lists exposes a public per-stream start time.
+  liveSince?: number;
 }
 
-function StreamCard({ stream, following, onToggleFollow, onCast, casting, castActive }: StreamCardProps) {
+function StreamCard({ stream, following, onToggleFollow, onCast, casting, castActive, liveSince }: StreamCardProps) {
   const onPress = () => {
     Linking.openURL(`${DEFAULT_CONFIG.rustlaUrl}${stream.url}`);
   };
@@ -79,7 +115,7 @@ function StreamCard({ stream, following, onToggleFollow, onCast, casting, castAc
   const canCast = stream.service === 'angelthump';
   return (
     <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.8}>
-      <Image source={{ uri: stream.thumbnail }} style={styles.thumbnail} resizeMode="cover" />
+      <Image source={{ uri: withThumbnailCacheBust(stream.thumbnail) }} style={styles.thumbnail} resizeMode="cover" />
       <View style={styles.cardMeta}>
         <Text style={styles.title} numberOfLines={1}>
           {stream.title}
@@ -93,7 +129,9 @@ function StreamCard({ stream, following, onToggleFollow, onCast, casting, castAc
           </Text>{' '}
           · {stream.service}
         </Text>
-        <Text style={styles.viewers}>{stream.rustlers.toLocaleString()} watching</Text>
+        <Text style={styles.viewers}>
+          {stream.rustlers.toLocaleString()} watching{liveSince !== undefined ? ` · live for ${formatUptime(liveSince)}` : ''}
+        </Text>
       </View>
       {stream.nsfw && (
         <View style={styles.nsfwBadge}>
@@ -133,6 +171,7 @@ function StreamCard({ stream, following, onToggleFollow, onCast, casting, castAc
 
 export default function StreamsScreen() {
   const [streams, setStreams] = useState<Stream[]>([]);
+  const [angelThumpStartTimes, setAngelThumpStartTimes] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -219,6 +258,17 @@ export default function StreamsScreen() {
       // a channel going live while the app is backgrounded doesn't also
       // re-notify the moment the app comes back to the foreground and polls.
       await checkForNewlyLiveFollows(list, follows);
+      // Only worth the extra request if there's actually an AngelThump card
+      // to show "live for" on. A failure here shouldn't blank out uptime on
+      // cards that already had it from a previous successful poll, so it's
+      // a separate try/catch rather than folding into the block above.
+      if (list.some(s => s.service === 'angelthump')) {
+        try {
+          setAngelThumpStartTimes(await fetchAngelThumpStartTimes());
+        } catch (err) {
+          log.warn('failed to load AngelThump start times', err);
+        }
+      }
     } catch (err) {
       log.warn('failed to load stream list', err);
       setError('Failed to load streams');
@@ -355,6 +405,7 @@ export default function StreamsScreen() {
               onCast={onCast}
               casting={castingKey === key}
               castActive={activeCastKey === key}
+              liveSince={item.service === 'angelthump' ? angelThumpStartTimes.get(item.channel.toLowerCase()) : undefined}
             />
           );
         }}
