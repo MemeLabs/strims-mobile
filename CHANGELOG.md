@@ -7,6 +7,10 @@ the release process itself.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-23
+
+First tagged release.
+
 ### Added
 - Chat tab: Twitch OAuth login (in-app WebView), REST catch-up + websocket sync, chat-gui
   emote rendering (including animated spritesheet emotes and a subset of chat-gui's emote
