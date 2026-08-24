@@ -7,6 +7,8 @@ the release process itself.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-24
+
 ### Added
 - Daily update check: a tappable "update available" badge next to the title bar links to a
   modal with the release notes and downloads/installs the new APK directly.
