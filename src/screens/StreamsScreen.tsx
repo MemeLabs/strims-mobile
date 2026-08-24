@@ -5,6 +5,7 @@ import {
   FlatList,
   Image,
   Linking,
+  Modal,
   RefreshControl,
   StyleSheet,
   Text,
@@ -14,7 +15,7 @@ import {
 import GoogleCast, { CastButton, useRemoteMediaClient } from 'react-native-google-cast';
 import { viewerChannelColor } from '../chat/viewerColor';
 import { fetchStreamList } from '../streams/api';
-import { resolveAngelThumpHls } from '../streams/hlsResolver';
+import { ANGELTHUMP_REGIONS, resolveAngelThumpHls } from '../streams/hlsResolver';
 import { followKey, loadFollows, toggleFollow } from '../streams/follows';
 import { ensureNotificationPermission } from '../streams/notifications';
 import { checkForNewlyLiveFollows } from '../streams/liveTracking';
@@ -137,6 +138,10 @@ export default function StreamsScreen() {
   const [error, setError] = useState<string | null>(null);
   const [follows, setFollows] = useState<Set<string>>(new Set());
   const [castingKey, setCastingKey] = useState<string | null>(null);
+  // The stream a region picker is currently showing for — set on cast tap,
+  // cleared once a region's picked (or the picker's dismissed). Only the
+  // "start casting" path needs this; stopping an active cast bypasses it.
+  const [regionPickerStream, setRegionPickerStream] = useState<Stream | null>(null);
   // Which stream is actively loaded on the connected Cast device (distinct
   // from castingKey, which is only true transiently while resolving/
   // sending the load command) — drives the "currently casting" icon state
@@ -286,10 +291,18 @@ export default function StreamsScreen() {
       return;
     }
 
+    setRegionPickerStream(stream);
+  };
+
+  // Called once a region's been picked (see the Modal below) — the actual
+  // resolve-and-load, previously the second half of onCast.
+  const onConfirmCastRegion = async (stream: Stream, regionCode: string) => {
+    setRegionPickerStream(null);
+    const key = followKey(stream.service, stream.channel);
     setCastingKey(key);
     try {
-      const hlsUrl = await resolveAngelThumpHls(stream.channel);
-      log.info(`resolved ${stream.channel} -> ${hlsUrl}`);
+      const hlsUrl = await resolveAngelThumpHls(stream.channel, regionCode);
+      log.info(`resolved ${stream.channel} (${regionCode}) -> ${hlsUrl}`);
       if (client) {
         await loadMediaOnClient(hlsUrl, stream);
       } else {
@@ -353,6 +366,29 @@ export default function StreamsScreen() {
           </View>
         }
       />
+      <Modal visible={regionPickerStream !== null} transparent animationType="fade" onRequestClose={() => setRegionPickerStream(null)}>
+        <TouchableOpacity
+          style={styles.regionPickerBackdrop}
+          activeOpacity={1}
+          onPress={() => setRegionPickerStream(null)}
+        >
+          <View style={styles.regionPickerCard}>
+            <Text style={styles.regionPickerTitle}>Cast from</Text>
+            {ANGELTHUMP_REGIONS.map(region => (
+              <TouchableOpacity
+                key={region.code}
+                style={styles.regionOption}
+                onPress={() => regionPickerStream && onConfirmCastRegion(regionPickerStream, region.code)}
+              >
+                <Text style={styles.regionOptionText}>{region.label}</Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity style={styles.regionCancel} onPress={() => setRegionPickerStream(null)}>
+              <Text style={styles.regionCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </>
   );
 }
@@ -370,6 +406,39 @@ const styles = StyleSheet.create({
   },
   retryButtonText: { color: '#fff', fontWeight: '600' },
   listContent: { padding: 8 },
+  regionPickerBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  regionPickerCard: {
+    backgroundColor: '#1c1d24',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    width: 220,
+  },
+  regionPickerTitle: {
+    color: '#8291b2',
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
+    paddingVertical: 8,
+  },
+  regionOption: {
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#2a2b33',
+  },
+  regionOptionText: { color: '#fff', fontSize: 16, textAlign: 'center' },
+  regionCancel: {
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#2a2b33',
+    marginTop: 4,
+  },
+  regionCancelText: { color: '#e45e07', fontSize: 15, fontWeight: '600', textAlign: 'center' },
   card: {
     flexDirection: 'row',
     backgroundColor: '#1c1e27',

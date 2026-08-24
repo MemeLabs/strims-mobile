@@ -48,14 +48,43 @@ async function resolveEdgeManifestUrl(masterManifestUrl: string): Promise<string
   return edgeUrl;
 }
 
+// AngelThump replicates a live stream's HLS segments across several
+// regional edge servers (same path, different hostname) — the manifest
+// resolved above only ever hands back whichever one it's decided to route
+// you to by default (observed: geographically-routed, e.g. sfo1 from the
+// US), not a menu of options. There's no API that lists which regions a
+// given stream is actually live on; this is the fixed set chat-gui/Rustla2
+// users have been observed referencing for manual region selection.
+export const ANGELTHUMP_REGIONS: { code: string; label: string }[] = [
+  { code: 'sfo1', label: 'SFO' },
+  { code: 'ams1', label: 'AMS' },
+  { code: 'fra1', label: 'FRA' },
+  { code: 'nyc1', label: 'NYC' },
+  { code: 'sgp1', label: 'SGP' },
+];
+
+const REGION_HOST_RE = /^https:\/\/[a-z]+\d\.angelthump\.com\//;
+
+// Swaps the edge server region in an already-resolved manifest URL (e.g.
+// `https://sfo1.angelthump.com/hls/...` -> `https://ams1.angelthump.com/hls/...`).
+// The path/stream-id portion is unaffected by region — only the host
+// changes — but this is unverified against every stream actually being
+// live on every region; a region a stream isn't replicated to will just
+// fail to load on the receiver like any other bad URL would.
+export function withAngelThumpRegion(edgeUrl: string, regionCode: string): string {
+  return edgeUrl.replace(REGION_HOST_RE, `https://${regionCode}.angelthump.com/`);
+}
+
 // Resolves an AngelThump channel to its current playable, CORS-clean HLS
 // manifest URL — safe to hand directly to a Chromecast receiver. Throws if
 // the channel isn't actually live or any step of the resolution fails —
 // callers should surface that as "can't cast this stream right now" rather
 // than retry blindly, since a fresh token is cheap to fetch again on the
-// next tap.
-export async function resolveAngelThumpHls(channel: string): Promise<string> {
+// next tap. `regionCode` (see ANGELTHUMP_REGIONS) overrides the edge server
+// the default resolution would otherwise route to.
+export async function resolveAngelThumpHls(channel: string, regionCode?: string): Promise<string> {
   const token = await fetchAngelThumpToken(channel);
   const masterManifestUrl = `${VIGOR_BASE}/hls/${encodeURIComponent(channel)}.m3u8?token=${token}`;
-  return resolveEdgeManifestUrl(masterManifestUrl);
+  const edgeUrl = await resolveEdgeManifestUrl(masterManifestUrl);
+  return regionCode ? withAngelThumpRegion(edgeUrl, regionCode) : edgeUrl;
 }
