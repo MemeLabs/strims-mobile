@@ -7,6 +7,18 @@ community, built to match the behavior of the existing web ecosystem
 against a physical device; iOS is expected to work but hasn't been build-verified yet (see
 [docs/gotchas.md](docs/gotchas.md)). Not published to the App Store or Play Store.
 
+## Install (Android)
+
+Grab `app-release.apk` from the [latest release](https://github.com/nom-d-plume/strims-mobile/releases/latest).
+
+- Open the release page on your phone and tap `app-release.apk` to download it.
+- Android will prompt you to allow installs from that source (Chrome/Files) — allow it once.
+- Open the downloaded APK and tap Install.
+- You'll get an "unknown developer" warning — expected, it's debug-signed rather than Play
+  Store-signed; tap through it.
+
+No iOS build yet — see [docs/releasing.md](docs/releasing.md) for why.
+
 ## Screenshots
 
 | Chat | Streams |
