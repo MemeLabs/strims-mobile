@@ -1,13 +1,39 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { getEmoteIndexUpdatedAt } from '../chat/emotes';
 import pkg from '../../package.json';
 
 interface Props {
   onClose: () => void;
   onLogout: () => void;
+  onRefreshEmotes: () => Promise<void>;
 }
 
-export default function SettingsScreen({ onClose, onLogout }: Props) {
+function formatDate(timestamp: number): string {
+  const d = new Date(timestamp);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${mm}/${dd}/${d.getFullYear()}`;
+}
+
+export default function SettingsScreen({ onClose, onLogout, onRefreshEmotes }: Props) {
+  const [refreshing, setRefreshing] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    getEmoteIndexUpdatedAt().then(setUpdatedAt);
+  }, []);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await onRefreshEmotes();
+      setUpdatedAt(await getEmoteIndexUpdatedAt());
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   return (
     <View style={styles.root}>
       <View style={styles.header}>
@@ -18,9 +44,23 @@ export default function SettingsScreen({ onClose, onLogout }: Props) {
         <View style={styles.headerSpacer} />
       </View>
       <View style={styles.content}>
+        {/* Emotes are fetched and cropped once, ever, and cached (see
+            emotes.ts / emoteFrames.ts) — this row is the only way that
+            cache ever gets forced to refresh, so it doubles as the only
+            place that matters to show when it last actually happened. */}
+        <View style={styles.emotesRow}>
+          <Text style={styles.emotesLabel}>
+            Emotes last updated: {updatedAt ? formatDate(updatedAt) : '—'}
+          </Text>
+          <TouchableOpacity style={styles.refreshButton} onPress={handleRefresh} disabled={refreshing}>
+            <Text style={styles.refreshText}>{refreshing ? 'Refreshing…' : 'Refresh'}</Text>
+          </TouchableOpacity>
+        </View>
+
         <TouchableOpacity style={styles.logoutButton} onPress={onLogout}>
           <Text style={styles.logoutText}>Log out</Text>
         </TouchableOpacity>
+
         <Text style={styles.version}>strims-mobile v{pkg.version}</Text>
       </View>
     </View>
@@ -43,7 +83,28 @@ const styles = StyleSheet.create({
   title: { color: '#ffffff', fontSize: 16, fontWeight: '700' },
   // Balances the "‹ Back" label so the title stays visually centered.
   headerSpacer: { width: 50 },
-  content: { flex: 1, alignItems: 'center', paddingTop: 32, paddingHorizontal: 20 },
+  content: { paddingTop: 24, paddingHorizontal: 20, alignItems: 'center' },
+  emotesRow: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: '#2a2a2a',
+    marginBottom: 24,
+  },
+  emotesLabel: { color: '#ccc', fontSize: 14 },
+  refreshButton: {
+    backgroundColor: '#132a3a',
+    borderWidth: 1,
+    borderColor: '#2f5c7a',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+  },
+  refreshText: { color: '#7fc4f7', fontSize: 14, fontWeight: '600' },
   logoutButton: {
     backgroundColor: '#3a1414',
     borderWidth: 1,

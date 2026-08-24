@@ -9,12 +9,18 @@ import TabBar, { type TabKey } from './src/components/TabBar';
 import TitleBar from './src/components/TitleBar';
 import { clearSession, loadSession } from './src/storage/session';
 import { configureBackgroundFetch } from './src/streams/backgroundFetch';
+import { refreshEmoteIndex } from './src/chat/emotes';
+import { refreshEmoteFrames } from './src/chat/emoteFrames';
 
 export default function App() {
   const [booting, setBooting] = useState(true);
   const [jwt, setJwt] = useState<string | null>(null);
   const [tab, setTab] = useState<TabKey>('chat');
   const [settingsVisible, setSettingsVisible] = useState(false);
+  // Bumped by the Settings "Refresh emotes" button — passed to ChatScreen
+  // so it knows to re-fetch the (otherwise never-expiring, see emotes.ts)
+  // emote index instead of only ever loading it once on mount.
+  const [emoteRefreshKey, setEmoteRefreshKey] = useState(0);
 
   useEffect(() => {
     loadSession()
@@ -33,6 +39,12 @@ export default function App() {
     setJwt(null);
   };
 
+  const onRefreshEmotes = async () => {
+    await refreshEmoteFrames();
+    await refreshEmoteIndex();
+    setEmoteRefreshKey(k => k + 1);
+  };
+
   return (
     <SafeAreaProvider>
       <StatusBar barStyle="light-content" />
@@ -44,7 +56,11 @@ export default function App() {
           // screens below no longer apply their own top safe-area edge.
           <SafeAreaView style={styles.root} edges={['top']}>
             {settingsVisible ? (
-              <SettingsScreen onClose={() => setSettingsVisible(false)} onLogout={onLogout} />
+              <SettingsScreen
+                onClose={() => setSettingsVisible(false)}
+                onLogout={onLogout}
+                onRefreshEmotes={onRefreshEmotes}
+              />
             ) : (
               <>
                 <TitleBar onPressSettings={() => setSettingsVisible(true)} />
@@ -54,7 +70,7 @@ export default function App() {
                     and the streams list survive tab swaps instead of
                     reloading from scratch each time. */}
                 <View style={tab === 'chat' ? styles.flexVisible : styles.hidden}>
-                  <ChatScreen jwt={jwt} />
+                  <ChatScreen jwt={jwt} emoteRefreshKey={emoteRefreshKey} />
                 </View>
                 <View style={tab === 'streams' ? styles.flexVisible : styles.hidden}>
                   <StreamsScreen />

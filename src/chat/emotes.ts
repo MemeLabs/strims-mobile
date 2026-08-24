@@ -30,15 +30,23 @@ export interface EmoteInfo {
 
 // Bump the version suffix whenever the parsing logic changes shape, so a
 // stale cache from an older parser (e.g. one that dropped emotes with
-// non-standard resolution sets) doesn't linger for its full TTL.
+// non-standard resolution sets) doesn't linger indefinitely.
 const STORAGE_KEY = 'gg.strims.mobile.emote-index.v7';
-const TTL_MS = 24 * 60 * 60 * 1000;
 
 interface StoredIndex {
   fetchedAt: number;
   emotes: [string, EmoteInfo][];
 }
 
+// No TTL — this cache is never invalidated automatically. Every automatic
+// re-check (even just "is this still fresh") means re-fetching and
+// re-parsing the whole emotes.<hash>.css bundle, and re-cropping every
+// animated emote touched since (see emoteFrames.ts, where that used to mean
+// re-downloading full spritesheets over the network). chat-gui's index only
+// changes on a deploy, which isn't often enough to justify that cost
+// automatically — refreshing is a deliberate action now (Settings → Refresh
+// emotes, see refreshEmoteIndex below), not something that happens on a
+// timer or on every cold start.
 async function readCache(): Promise<Map<string, EmoteInfo> | null> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
@@ -46,9 +54,6 @@ async function readCache(): Promise<Map<string, EmoteInfo> | null> {
       return null;
     }
     const stored = JSON.parse(raw) as StoredIndex;
-    if (Date.now() - stored.fetchedAt > TTL_MS) {
-      return null;
-    }
     log.info(`using cached emote index from ${new Date(stored.fetchedAt).toISOString()}`);
     return new Map(stored.emotes);
   } catch (err) {
@@ -193,4 +198,29 @@ export function loadEmoteIndex(): Promise<Map<string, EmoteInfo>> {
     });
   }
   return cache;
+}
+
+// For Settings' "Emotes last updated" label — reads the persisted
+// timestamp directly rather than going through loadEmoteIndex()/cache, so
+// checking it never triggers a network fetch itself.
+export async function getEmoteIndexUpdatedAt(): Promise<number | null> {
+  try {
+    const raw = await AsyncStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+    return (JSON.parse(raw) as StoredIndex).fetchedAt;
+  } catch {
+    return null;
+  }
+}
+
+// The only way the emote index (and, via refreshEmoteFrames, the cropped
+// frame cache) ever gets refetched — wired to Settings' "Refresh emotes"
+// button. Clears the persisted cache and forces a fresh network fetch,
+// bypassing readCache entirely.
+export async function refreshEmoteIndex(): Promise<Map<string, EmoteInfo>> {
+  await AsyncStorage.removeItem(STORAGE_KEY);
+  cache = null;
+  return loadEmoteIndex();
 }

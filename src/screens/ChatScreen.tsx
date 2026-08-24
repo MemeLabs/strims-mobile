@@ -37,6 +37,11 @@ const log = makeLogger('chat-screen');
 
 interface Props {
   jwt: string;
+  // Bumped by Settings' "Refresh emotes" button (see App.tsx) — the emote
+  // index has no automatic expiry (see emotes.ts), so this is the only
+  // thing that ever tells this screen to re-fetch it after the initial
+  // mount.
+  emoteRefreshKey: number;
 }
 
 // Some emotes are 80px+ tall at native size. Rendered inline at that size,
@@ -232,7 +237,7 @@ function ComboRow({ emoteName, count, emotes }: { emoteName: string; count: numb
 // disconnect that's failed to recover for this long is worth calling out.
 const LONG_DISCONNECT_MS = 60000;
 
-export default function ChatScreen({ jwt }: Props) {
+export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
   const { messages, me, status, sendMessage, catchUpCount, viewerStates } = useChat(jwt);
   const [longDisconnected, setLongDisconnected] = useState(false);
   const [draft, setDraft] = useState('');
@@ -256,6 +261,13 @@ export default function ChatScreen({ jwt }: Props) {
 
   useEffect(() => {
     loadEmoteIndex().then(setEmotes);
+    // emoteRefreshKey has no effect the first time this runs (mount) —
+    // it's only here so a later bump (Settings → Refresh emotes, see
+    // App.tsx) makes this effect re-run and pick up the freshly-refreshed
+    // index that loadEmoteIndex() now returns.
+  }, [emoteRefreshKey]);
+
+  useEffect(() => {
     loadNickColors().then(setNickColors);
     // TEMP: force the tooltip to retrigger on every launch for visual
     // review — revert to `hasSeenNickColorTooltip().then(seen => {...})`
