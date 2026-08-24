@@ -226,8 +226,15 @@ function ComboRow({ emoteName, count, emotes }: { emoteName: string; count: numb
   );
 }
 
+// Reconnects are frequent and usually resolve within a couple seconds
+// (short-retry backoff, see source.ts) — flashing a banner for every single
+// blip once we already have chat history on screen is just noise. Only a
+// disconnect that's failed to recover for this long is worth calling out.
+const LONG_DISCONNECT_MS = 60000;
+
 export default function ChatScreen({ jwt }: Props) {
   const { messages, me, status, sendMessage, catchUpCount, viewerStates } = useChat(jwt);
+  const [longDisconnected, setLongDisconnected] = useState(false);
   const [draft, setDraft] = useState('');
   const [selection, setSelection] = useState({ start: 0, end: 0 });
   const [emotes, setEmotes] = useState<Map<string, EmoteInfo>>(new Map());
@@ -237,6 +244,15 @@ export default function ChatScreen({ jwt }: Props) {
   const [tooltipVisible, setTooltipVisible] = useState(false);
   const tooltipSeenRef = useRef(true); // assume seen until we know otherwise, to avoid a flash
   const inputRef = useRef<TextInput>(null);
+
+  useEffect(() => {
+    if (status !== 'closed') {
+      setLongDisconnected(false);
+      return;
+    }
+    const timer = setTimeout(() => setLongDisconnected(true), LONG_DISCONNECT_MS);
+    return () => clearTimeout(timer);
+  }, [status]);
 
   useEffect(() => {
     loadEmoteIndex().then(setEmotes);
@@ -362,12 +378,20 @@ export default function ChatScreen({ jwt }: Props) {
     setSelection({ start: 0, end: 0 });
   };
 
+  // A reconnect while we already have history on screen is invisible to the
+  // user (messages just keep flowing once it resolves, usually within a
+  // couple seconds) — only worth a banner the very first time, before
+  // there's anything to look at yet. A disconnect that's failed to recover
+  // for a while is worth surfacing regardless of history.
+  const showConnecting = status === 'connecting' && messages.length === 0;
+  const showDisconnected = status === 'closed' && longDisconnected;
+
   return (
     <View style={styles.container}>
-      {status !== 'open' && (
-        <View style={styles.statusBar}>
-          <Text style={styles.statusText}>
-            {status === 'connecting' ? 'Connecting…' : 'Disconnected — retrying…'}
+      {(showConnecting || showDisconnected) && (
+        <View style={[styles.statusBar, showDisconnected && styles.statusBarError]}>
+          <Text style={[styles.statusText, showDisconnected && styles.statusTextError]}>
+            {showDisconnected ? 'Disconnected' : 'Connecting…'}
           </Text>
         </View>
       )}
@@ -574,6 +598,8 @@ const styles = StyleSheet.create({
   list: { flex: 1 },
   statusBar: { backgroundColor: '#3a2f1f', paddingVertical: 4, alignItems: 'center' },
   statusText: { color: '#e0c080', fontSize: 12 },
+  statusBarError: { backgroundColor: '#3a1414' },
+  statusTextError: { color: '#ff6b6b' },
   listContent: { paddingHorizontal: 8, paddingVertical: 6 },
   messageRow: { paddingVertical: 2 },
   messageRowContinued: { paddingVertical: 0, marginTop: -1 },

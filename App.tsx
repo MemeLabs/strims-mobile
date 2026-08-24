@@ -8,6 +8,7 @@ import SettingsScreen from './src/screens/SettingsScreen';
 import TabBar, { type TabKey } from './src/components/TabBar';
 import TitleBar from './src/components/TitleBar';
 import { clearSession, loadSession } from './src/storage/session';
+import { configureBackgroundFetch } from './src/streams/backgroundFetch';
 
 export default function App() {
   const [booting, setBooting] = useState(true);
@@ -19,6 +20,11 @@ export default function App() {
     loadSession()
       .then(session => setJwt(session?.jwt ?? null))
       .finally(() => setBooting(false));
+    // Not gated on being logged in — a logged-out user has no follows to
+    // notify about anyway (checkForNewlyLiveFollows would just find none),
+    // so there's no harm configuring it unconditionally, and it means
+    // background fetch is already running by the time login completes.
+    configureBackgroundFetch();
   }, []);
 
   const onLogout = async () => {
@@ -57,7 +63,13 @@ export default function App() {
             )}
           </SafeAreaView>
         ) : (
-          <LoginScreen onLoggedIn={setJwt} />
+          // Needs the same top-inset treatment as the authed view above —
+          // without it, the WebView's content (Twitch's own page, which has
+          // no notion of our status bar) starts right at y=0 and its header
+          // collides with the status bar.
+          <SafeAreaView style={styles.root} edges={['top']}>
+            <LoginScreen onLoggedIn={setJwt} />
+          </SafeAreaView>
         )}
       </View>
     </SafeAreaProvider>

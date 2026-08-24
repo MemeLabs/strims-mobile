@@ -22,9 +22,28 @@ const SPOOFED_USER_AGENT =
   'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) ' +
   'Chrome/126.0.0.0 Mobile Safari/537.36';
 
+// Twitch/Google's own OAuth pages top-anchor their content on mobile,
+// leaving a lot of dead space below on a tall phone screen — we can't
+// restyle their page directly, so this injects a stylesheet after each
+// navigation (OAuth is a chain of redirects, each a fresh page) to flex-
+// center it instead. Guarded by a marker id so re-running it on the same
+// page (e.g. a second navigation event without an actual page change)
+// doesn't stack duplicate <style> tags.
+const CENTER_PAGE_SCRIPT = `
+(function() {
+  if (document.getElementById('__strims_center_style')) { return; }
+  var style = document.createElement('style');
+  style.id = '__strims_center_style';
+  style.textContent = 'body { min-height: 100vh; display: flex; flex-direction: column; justify-content: center; }';
+  document.head.appendChild(style);
+})();
+true;
+`;
+
 export default function LoginScreen({ onLoggedIn }: Props) {
   const [loading, setLoading] = useState(true);
   const resolvedRef = useRef(false);
+  const webViewRef = useRef<React.ComponentRef<typeof WebView>>(null);
 
   const checkForSession = useCallback(async () => {
     if (resolvedRef.current) {
@@ -47,6 +66,7 @@ export default function LoginScreen({ onLoggedIn }: Props) {
       setLoading(navState.loading);
       if (!navState.loading) {
         checkForSession();
+        webViewRef.current?.injectJavaScript(CENTER_PAGE_SCRIPT);
       }
     },
     [checkForSession],
@@ -55,8 +75,10 @@ export default function LoginScreen({ onLoggedIn }: Props) {
   return (
     <View style={styles.container}>
       <WebView
+        ref={webViewRef}
         source={{ uri: DEFAULT_CONFIG.loginUri }}
         onNavigationStateChange={handleNavigationChange}
+        injectedJavaScript={CENTER_PAGE_SCRIPT}
         sharedCookiesEnabled
         thirdPartyCookiesEnabled
         incognito={false}

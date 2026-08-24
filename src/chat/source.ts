@@ -22,16 +22,6 @@ const READY_STATE_CONNECTING = 0;
 const READY_STATE_CLOSED = 3;
 const READY_STATE_OPEN = 1;
 
-// Without any keepalive, idle connections get silently dropped by the
-// server/proxy and we'd only notice on the next send. Kept deliberately
-// loose: chat traffic (and the connection itself) can be slow, and RN's JS
-// timers get throttled in the background, so a tight timeout just produces
-// false-positive closes. The heartbeat is paused entirely while the app is
-// backgrounded (see pause/resume) rather than relying on this timeout to
-// survive it.
-const PING_INTERVAL_MS = 30000;
-const PONG_TIMEOUT_MS = 15000;
-
 // A connection that opens and dies again within this window didn't actually
 // succeed — likely the server itself is rejecting/kicking it (e.g. rate
 // limiting rapid reconnects). Treating that as a "success" that resets the
@@ -47,8 +37,6 @@ export default class ChatSource extends EventEmitter {
   retryOnDisconnect = true;
   private retryAttempts = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
-  private pingTimer: ReturnType<typeof setInterval> | null = null;
-  private pongTimer: ReturnType<typeof setTimeout> | null = null;
   private openedAt: number | null = null;
 
   isConnected(): boolean {
@@ -92,7 +80,6 @@ export default class ChatSource extends EventEmitter {
   }
 
   disconnect(): void {
-    this.stopHeartbeat();
     if (this.socket && this.socket.readyState !== READY_STATE_CLOSED) {
       this.socket.close();
     }
@@ -103,11 +90,9 @@ export default class ChatSource extends EventEmitter {
     this.emit('OPEN', e);
     this.openedAt = Date.now();
     this.retryOnDisconnect = true;
-    this.startHeartbeat();
   }
 
   private onClose(e: { code?: number }): void {
-    this.stopHeartbeat();
     const wasStable = this.openedAt !== null && Date.now() - this.openedAt >= STABLE_CONNECTION_MS;
     this.openedAt = null;
     if (wasStable) {
@@ -127,57 +112,7 @@ export default class ChatSource extends EventEmitter {
     this.emit('CLOSE', { code: e.code || 1006, retryMilli });
   }
 
-  private startHeartbeat(): void {
-    this.stopHeartbeat();
-    this.pingTimer = setInterval(() => {
-      if (!this.isConnected()) {
-        return;
-      }
-      log.info('sending ping');
-      this.socket!.send('PING {}');
-      this.pongTimer = setTimeout(() => {
-        // No frame of any kind arrived within the timeout — the connection
-        // is dead even though the OS hasn't noticed yet. Force a reconnect.
-        log.warn(`no frame within ${PONG_TIMEOUT_MS}ms of ping, forcing close`);
-        this.socket?.close();
-      }, PONG_TIMEOUT_MS);
-    }, PING_INTERVAL_MS);
-  }
-
-  private stopHeartbeat(): void {
-    if (this.pingTimer !== null) {
-      clearInterval(this.pingTimer);
-      this.pingTimer = null;
-    }
-    if (this.pongTimer !== null) {
-      clearTimeout(this.pongTimer);
-      this.pongTimer = null;
-    }
-  }
-
-  // Called when the app backgrounds — stop pinging so a throttled/frozen JS
-  // timer can't fire a stale pong-timeout and kill a perfectly good socket
-  // once the app comes back to the foreground.
-  pauseHeartbeat(): void {
-    log.info('heartbeat paused (app backgrounded)');
-    this.stopHeartbeat();
-  }
-
-  // Called when the app returns to the foreground. If the socket is still
-  // open, resume pinging; if it died while backgrounded, the normal
-  // onclose/retry path already handles reconnecting.
-  resumeHeartbeat(): void {
-    if (this.isConnected()) {
-      log.info('heartbeat resumed (app foregrounded)');
-      this.startHeartbeat();
-    }
-  }
-
   private onMsg(e: { data: unknown }): void {
-    if (this.pongTimer !== null) {
-      clearTimeout(this.pongTimer);
-      this.pongTimer = null;
-    }
     this.parseAndDispatch(e);
   }
 

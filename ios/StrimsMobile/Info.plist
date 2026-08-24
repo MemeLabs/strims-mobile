@@ -36,6 +36,14 @@
 	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string></string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<!-- Required for react-native-background-fetch's periodic checks
+		     (see src/streams/backgroundFetch.ts) to run at all while
+		     backgrounded — without this entry iOS never wakes the app for
+		     BGAppRefreshTask regardless of what's configured in JS. -->
+		<string>fetch</string>
+	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIRequiredDeviceCapabilities</key>

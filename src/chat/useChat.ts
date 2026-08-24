@@ -16,7 +16,7 @@ function decodeHistory(lines: string[]): ChatMessage[] {
     .map(frame => frame.data);
 }
 
-const MAX_MESSAGES = 500;
+const MAX_MESSAGES = 200;
 
 export type ConnectionStatus = 'connecting' | 'open' | 'closed';
 
@@ -103,6 +103,14 @@ export function useChat(jwt: string) {
       setMessages(prev => [...prev.slice(-(MAX_MESSAGES - 1)), data]);
     });
     source.on('VIEWERSTATE', applyViewerState);
+    // The server pings, not us (chat-gui's chat.js: `source.on("PING", data
+    // => source.send("PONG", data))`) — chat.strims.gg is Cloudflare-proxied
+    // (confirmed via response headers), which silently drops idle WebSocket
+    // connections after ~100s, so this is almost certainly what keeps the
+    // Cloudflare-side connection alive. An earlier client-initiated ping
+    // here (which the server never replies to, since it's not the real
+    // protocol) was forcing a bogus reconnect roughly every 15s.
+    source.on('PING', (data: unknown) => source.send('PONG', data));
 
     // Reconnecting means we likely missed messages during the gap — refetch
     // history the same way the web client does on initial load.
@@ -133,16 +141,25 @@ export function useChat(jwt: string) {
       lastAppState.current = nextState;
       const source = sourceRef.current;
       if (nextState === 'active') {
+        setStatus('connecting');
         runCatchUp();
-        if (source) {
-          if (!source.isConnected() && !source.isConnecting()) {
-            source.connect(DEFAULT_CONFIG.websocketUri, jwt);
-          } else {
-            source.resumeHeartbeat();
-          }
+        if (source && !source.isConnected() && !source.isConnecting()) {
+          source.retryOnDisconnect = true;
+          source.connect(DEFAULT_CONFIG.websocketUri, jwt);
         }
-      } else {
-        source?.pauseHeartbeat();
+      } else if (source) {
+        // A backgrounded app has no UI to reflect live messages into, so an
+        // open socket there is pure cost — RN doesn't suspend a live
+        // WebSocket just because the app is backgrounded, meaning it'd sit
+        // connected (and, on Android, block full Doze-mode power savings)
+        // for however long the OS lets the process live. Disconnecting
+        // outright (with retryOnDisconnect off, so the normal reconnect
+        // backoff doesn't immediately try to redial while backgrounded) and
+        // resuming fresh on foreground — same catch-up path as a cold
+        // start — is simpler and cheaper than trying to keep a background
+        // connection alive.
+        source.retryOnDisconnect = false;
+        source.disconnect();
       }
     };
     const sub = AppState.addEventListener('change', onAppStateChange);

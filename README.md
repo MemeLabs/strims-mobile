@@ -7,6 +7,12 @@ community, built to match the behavior of the existing web ecosystem
 against a physical device; iOS is expected to work but hasn't been build-verified yet (see
 [docs/gotchas.md](docs/gotchas.md)). Not published to the App Store or Play Store.
 
+## Screenshots
+
+| Chat | Streams |
+| --- | --- |
+| ![Chat tab](docs/screenshots/chat.png) | ![Streams tab](docs/screenshots/streams.png) |
+
 ## What it does
 
 **Chat tab** — a full chat.strims.gg client:
@@ -38,12 +44,6 @@ against a physical device; iOS is expected to work but hasn't been build-verifie
   manifest to a castable edge URL; see [docs/architecture.md](docs/architecture.md)).
 
 **Settings** — reachable via the gear icon in the title bar: log out, app version.
-
-## Screenshots
-
-| Chat | Streams |
-| --- | --- |
-| ![Chat tab](docs/screenshots/chat.png) | ![Streams tab](docs/screenshots/streams.png) |
 
 ## Installation
 
@@ -83,6 +83,8 @@ strims.gg deployment. Edit that file if pointing the app at a self-hosted instan
 
 ## Development docs
 
+- [docs/local-dev.md](docs/local-dev.md) — day-to-day dev/test loop, including connecting a
+  physical Android device from WSL2 via `usbipd-win`.
 - [docs/architecture.md](docs/architecture.md) — module layout and how the major features
   (chat sync, streams/cast, emotes) fit together.
 - [docs/emotes.md](docs/emotes.md) — the animated-emote crop pipeline and modifier system.

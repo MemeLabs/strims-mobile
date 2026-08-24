@@ -51,12 +51,18 @@ async function cropAllFrames(emote: EmoteInfo): Promise<string[]> {
   return frames;
 }
 
+// Shared with emoteClock.ts, so the synced-playback clock for a looping
+// emote and its cropped-frame cache always agree on identity.
+export function emoteFramesKey(name: string, emote: EmoteInfo): string {
+  return `${name}:${emote.uri}`;
+}
+
 // Returns cropped per-frame image URIs for an animated emote (or a single-
 // element array of the original uri for a static one) — cached per emote
 // name/uri so repeat renders (the same emote used many times in chat)
 // don't re-crop.
 export function getEmoteFrames(name: string, emote: EmoteInfo): Promise<string[]> {
-  const key = `${name}:${emote.uri}`;
+  const key = emoteFramesKey(name, emote);
   let cached = frameCache.get(key);
   if (!cached) {
     cached = cropAllFrames(emote).catch(err => {

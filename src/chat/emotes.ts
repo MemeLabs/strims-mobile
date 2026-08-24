@@ -22,13 +22,16 @@ export interface EmoteInfo {
   animation?: {
     frameCount: number;
     durationMs: number;
+    // How many times chat-gui plays the loop before resting on the last
+    // frame (its default, non-`:hover` behavior — see ANIM_META_RE).
+    iterations: number;
   };
 }
 
 // Bump the version suffix whenever the parsing logic changes shape, so a
 // stale cache from an older parser (e.g. one that dropped emotes with
 // non-standard resolution sets) doesn't linger for its full TTL.
-const STORAGE_KEY = 'gg.strims.mobile.emote-index.v6';
+const STORAGE_KEY = 'gg.strims.mobile.emote-index.v7';
 const TTL_MS = 24 * 60 * 60 * 1000;
 
 interface StoredIndex {
@@ -81,8 +84,16 @@ const DIMENSION_RE = /(?:^|;)height:(\d+)px;width:(\d+)px/;
 // authoritative per-frame width/height plus the steps() animation timing —
 // `uri`/spritesheet comes from the block above, everything about how to
 // play it comes from here.
+// Duration is `Nms` for most emotes but `N.Ms`/`Ns` (decimal seconds) for
+// others (e.g. Aware, AlienPls, CLASSIC) — both forms appear throughout the
+// stylesheet, so both have to match or those emotes silently fall through
+// to the static-image path (rendering the raw, uncropped spritesheet).
+// The trailing number is the base (non-`:hover`) iteration count — chat-gui
+// plays every animated emote this many times and then rests on its last
+// frame; only hovering (which has no mobile equivalent) makes it loop
+// forever, so this finite count is what we should actually match.
 const ANIM_META_RE =
-  /\.chat-emote-([^{\s.]+)\{width:(\d+)px;height:(\d+)px;[^}]*?animation:[A-Za-z0-9_-]+-anim (\d+)ms steps\((\d+)\)/g;
+  /\.chat-emote-([^{\s.]+)\{width:(\d+)px;height:(\d+)px;[^}]*?animation:[A-Za-z0-9_-]+-anim ([\d.]+)(ms|s) steps\((\d+)\) (\d+) /g;
 
 // Emotes without explicit dimensions in the CSS fall back to this — close to
 // the median size across the emote set.
@@ -150,18 +161,19 @@ async function load(): Promise<Map<string, EmoteInfo>> {
   }
   let animatedCount = 0;
   for (const m of css.matchAll(ANIM_META_RE)) {
-    const [, name, width, height, durationMs, frameCount] = m;
+    const [, name, width, height, durationValue, durationUnit, frameCount, iterations] = m;
     const emote = emotes.get(name);
     if (!emote) {
       continue;
     }
+    const durationMs = durationUnit === 's' ? Number(durationValue) * 1000 : Number(durationValue);
     // The per-frame dimensions here are authoritative for animated emotes —
     // the compound-selector rule for these usually has no width/height of
     // its own at all (falls back to DEFAULT_SIZE), since sizing is meant to
     // come from this rule instead.
     emote.width = Number(width);
     emote.height = Number(height);
-    emote.animation = { frameCount: Number(frameCount), durationMs: Number(durationMs) };
+    emote.animation = { frameCount: Number(frameCount), durationMs, iterations: Number(iterations) };
     animatedCount++;
   }
 

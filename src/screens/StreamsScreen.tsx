@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   FlatList,
   Image,
   Linking,
@@ -15,7 +16,8 @@ import { viewerChannelColor } from '../chat/viewerColor';
 import { fetchStreamList } from '../streams/api';
 import { resolveAngelThumpHls } from '../streams/hlsResolver';
 import { followKey, loadFollows, toggleFollow } from '../streams/follows';
-import { ensureNotificationPermission, notifyStreamLive } from '../streams/notifications';
+import { ensureNotificationPermission } from '../streams/notifications';
+import { checkForNewlyLiveFollows } from '../streams/liveTracking';
 import { DEFAULT_CONFIG } from '../config/env';
 import { makeLogger } from '../log';
 import type { Stream } from '../streams/types';
@@ -141,10 +143,6 @@ export default function StreamsScreen() {
   // and lets a second tap stop it instead of reloading.
   const [activeCastKey, setActiveCastKey] = useState<string | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Keys of channels that were live as of the previous poll — used to
-  // detect "went live" transitions for followed channels rather than
-  // notifying on every poll while they're already live.
-  const previouslyLive = useRef<Set<string>>(new Set());
   const client = useRemoteMediaClient();
   // A cast tap can happen before a device is connected yet (the user picks
   // one from the dialog we open) — stash what to load once the session
@@ -211,15 +209,11 @@ export default function StreamsScreen() {
       const list = await fetchStreamList();
       setStreams(sortStreams(list));
       setError(null);
-
-      const nowLive = new Set(list.map(s => followKey(s.service, s.channel)));
-      for (const stream of list) {
-        const key = followKey(stream.service, stream.channel);
-        if (follows.has(key) && !previouslyLive.current.has(key)) {
-          notifyStreamLive(stream);
-        }
-      }
-      previouslyLive.current = nowLive;
+      // Shared with the background-fetch task (see streams/backgroundFetch.ts)
+      // — both read/write the same persisted "previously live" snapshot, so
+      // a channel going live while the app is backgrounded doesn't also
+      // re-notify the moment the app comes back to the foreground and polls.
+      await checkForNewlyLiveFollows(list, follows);
     } catch (err) {
       log.warn('failed to load stream list', err);
       setError('Failed to load streams');
@@ -230,15 +224,45 @@ export default function StreamsScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [follows]);
 
+  const startPolling = useCallback(() => {
+    if (pollTimer.current) {
+      return;
+    }
+    pollTimer.current = setInterval(() => load(false), POLL_INTERVAL_MS);
+  }, [load]);
+
+  const stopPolling = useCallback(() => {
+    if (pollTimer.current) {
+      clearInterval(pollTimer.current);
+      pollTimer.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     load(false);
-    pollTimer.current = setInterval(() => load(false), POLL_INTERVAL_MS);
-    return () => {
-      if (pollTimer.current) {
-        clearInterval(pollTimer.current);
-      }
-    };
+    startPolling();
+    return stopPolling;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load]);
+
+  // Backgrounded: stop polling — react-native-background-fetch's periodic
+  // task (~15min floor, see backgroundFetch.ts) covers the "did a followed
+  // channel go live" case while we're not in the foreground; a 2-minute
+  // poll timer serves no purpose there and just costs battery. Foreground:
+  // resume and refresh immediately rather than waiting out whatever's left
+  // of the interval, so the list isn't stale from however long we were away.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', nextState => {
+      if (nextState === 'active') {
+        stopPolling();
+        load(false);
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    });
+    return () => sub.remove();
+  }, [load, startPolling, stopPolling]);
 
   const onToggleFollow = async (stream: Stream) => {
     const key = followKey(stream.service, stream.channel);
