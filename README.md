@@ -9,7 +9,7 @@ against a physical device; iOS is expected to work but hasn't been build-verifie
 
 ## Install (Android)
 
-Grab `app-release.apk` from the [latest release](https://github.com/nom-d-plume/strims-mobile/releases/latest).
+Grab `app-release.apk` from the [latest release](https://github.com/MemeLabs/strims-mobile/releases/latest).
 
 - Open the release page on your phone and tap `app-release.apk` to download it.
 - Android will prompt you to allow installs from that source (Chrome/Files) — allow it once.
