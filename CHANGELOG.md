@@ -7,6 +7,8 @@ the release process itself.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-02
+
 ### Added
 - Long-press a nick for a menu: the stream they're watching (with its color bar, tap to open
   it on strims.gg), Mention, Whisper, Highlight messages, Set name color, and Ignore. Ignored
