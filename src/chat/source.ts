@@ -56,14 +56,7 @@ export default class ChatSource extends EventEmitter {
         clearTimeout(this.retryTimer);
         this.retryTimer = null;
       }
-      if (this.socket !== null) {
-        this.socket.onopen = null;
-        this.socket.onclose = null;
-        this.socket.onerror = null;
-        this.socket.onmessage = null;
-        this.disconnect();
-        this.socket = null;
-      }
+      this.dropSocket();
       log.info(`connecting (attempt ${this.retryAttempts})`, this.url);
       this.emit('CONNECTING', this.url);
       const socket = new (WebSocket as any)(this.url, undefined, {
@@ -83,6 +76,45 @@ export default class ChatSource extends EventEmitter {
     if (this.socket && this.socket.readyState !== READY_STATE_CLOSED) {
       this.socket.close();
     }
+  }
+
+  // Detaches handlers before closing, so a socket that's still mid-handshake
+  // (where close() doesn't take effect) can't fire a late open/close at us.
+  private dropSocket(): void {
+    if (this.socket !== null) {
+      this.socket.onopen = null;
+      this.socket.onclose = null;
+      this.socket.onerror = null;
+      this.socket.onmessage = null;
+      this.disconnect();
+      this.socket = null;
+    }
+  }
+
+  // Outage give-up: no further redials. An attempt already mid-handshake is
+  // left to finish; handshakes are sometimes just slow (>10s observed) and
+  // a late success is a real connection worth keeping.
+  cancelRetries(): void {
+    this.retryOnDisconnect = false;
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+  }
+
+  // Deliberate disconnect (backgrounding, unmount): no redials, and no
+  // in-flight attempt that could still open later.
+  stopRetrying(): void {
+    this.cancelRetries();
+    this.dropSocket();
+  }
+
+  // A user-requested fresh start: re-enables retrying with the short
+  // first-attempt backoff instead of continuing the long one.
+  reconnect(url: string, jwt: string): void {
+    this.retryAttempts = 0;
+    this.retryOnDisconnect = true;
+    this.connect(url, jwt);
   }
 
   private onOpen(e: unknown): void {

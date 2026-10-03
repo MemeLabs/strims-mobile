@@ -1,7 +1,13 @@
-import React, { useEffect, useState } from 'react';
-import { Animated, Image, Text } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Animated, Image, Platform, Text } from 'react-native';
 import { emoteFramesKey, getEmoteFrames } from '../chat/emoteFrames';
-import { subscribeToEmoteClock } from '../chat/emoteClock';
+import { getAnimatedEmoteUri } from '../chat/emoteWebp';
+import { usePreference } from '../storage/preferences';
+import {
+  getEmoteAnimationsActive,
+  subscribeToEmoteAnimationsActive,
+  subscribeToEmoteClock,
+} from '../chat/emoteClock';
 import { speedMultiplier, staticTransforms, useSpinRotation } from '../chat/emoteModifiers';
 import type { EmoteInfo } from '../chat/emotes';
 
@@ -20,13 +26,57 @@ interface Props {
 // roughly its real duration and visibly animates, just at a coarser step.
 const MIN_TICK_MS = 40;
 
+// Shown while an emote's frames/file aren't ready yet.
+const placeholderStyle = { fontStyle: 'italic' } as const;
+
 // Renders chat-gui's spritesheet-style "animated" emotes (see emotes.ts) —
 // a horizontal strip of frames chat-gui flips through via CSS steps() +
-// background-position, which RN has no equivalent for. Real per-frame
-// image files (cropped once and cached — see emoteFrames.ts) sidestep
-// that: cycling a plain Image's `source` needs no wrapping View or
-// transform, so — unlike the clip-and-transform approach this replaced —
-// it renders correctly even as an inline child of Text.
+// background-position, which RN has no equivalent for. Both paths below
+// end up as a plain inline <Image> (no wrapping View or clip transform),
+// which is what renders correctly as an inline child of Text.
+//
+// Android: the sheet is encoded once into an animated WebP (emoteWebp.ts)
+// and Fresco plays it natively, so no JS runs per frame — like the browser
+// compositor playing chat-gui's CSS. Each instance plays from its own mount,
+// as on desktop. :fast/:slow/:reverse/:pause are baked into the file.
+function NativeAnimatedEmote({ emote, width, height, accessibilityLabel, modifiers = [] }: Props) {
+  const spinRotate = useSpinRotation(modifiers);
+  const [uri, setUri] = useState<string | null>(null);
+  const reverse = modifiers.includes('reverse');
+  const paused = modifiers.includes('pause');
+  const speed = speedMultiplier(modifiers);
+  const forever = usePreference('animateEmotesForever');
+
+  useEffect(() => {
+    let cancelled = false;
+    setUri(null);
+    getAnimatedEmoteUri(accessibilityLabel ?? emote.uri, emote, { reverse, paused, speed, forever }).then(result => {
+      if (!cancelled) {
+        setUri(result);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [emote, accessibilityLabel, reverse, paused, speed, forever]);
+
+  if (!uri) {
+    // Still encoding (or failed): the name is a known-safe inline
+    // placeholder; the raw wide sheet would render as a garbled smear.
+    return <Text style={placeholderStyle}>{accessibilityLabel}</Text>;
+  }
+  const transform = [...staticTransforms(modifiers), ...(spinRotate ? [{ rotate: spinRotate }] : [])];
+  return (
+    <Animated.Image
+      source={{ uri }}
+      style={[{ width, height }, transform.length ? { transform } : null] as never}
+      accessibilityLabel={accessibilityLabel}
+    />
+  );
+}
+
+// iOS: per-frame image files (cropped once and cached — see emoteFrames.ts),
+// cycled by swapping the Image's `source` from JS.
 //
 // Playback splits into two distinct modes:
 //  - One-shot (e.g. Aware: plays once, rests on its last frame) — each
@@ -38,10 +88,15 @@ const MIN_TICK_MS = 40;
 //    its own independent interval, so all copies of e.g. catJAM visibly
 //    stay in phase with each other rather than drifting or resetting
 //    independently on unrelated re-renders.
-export default function AnimatedEmote({ emote, width, height, accessibilityLabel, modifiers = [] }: Props) {
+function FrameAnimatedEmote({ emote, width, height, accessibilityLabel, modifiers = [] }: Props) {
   const [frames, setFrames] = useState<string[] | null>(null);
   const [frameIndex, setFrameIndex] = useState(0);
   const spinRotate = useSpinRotation(modifiers);
+  const [animationsActive, setAnimationsActive] = useState(getEmoteAnimationsActive);
+  useEffect(() => subscribeToEmoteAnimationsActive(setAnimationsActive), []);
+  // Set once a one-shot has reached its resting frame, so re-running the
+  // effect (e.g. animations resuming) doesn't replay it from the start.
+  const oneShotDoneRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,10 +130,17 @@ export default function AnimatedEmote({ emote, width, height, accessibilityLabel
 
   // One-shot: play through once, independently per instance, then freeze.
   useEffect(() => {
-    if (!emote.animation || !frames || frames.length <= 1 || paused || !isOneShot) {
+    if (!emote.animation || !frames || frames.length <= 1 || paused || !isOneShot || oneShotDoneRef.current) {
       return;
     }
     const { frameCount, durationMs } = emote.animation;
+    // Hidden/backgrounded: skip straight to the resting frame instead of
+    // ticking off-screen (and instead of replaying it on resume).
+    if (!animationsActive) {
+      oneShotDoneRef.current = true;
+      setFrameIndex(frameCount - 1);
+      return;
+    }
     // Only the one-shot path applies :fast/:slow — it's per-instance, so
     // there's no "which instance's speed wins" conflict like there is for
     // a synced looping clock (see the looping effect below).
@@ -90,6 +152,7 @@ export default function AnimatedEmote({ emote, width, height, accessibilityLabel
     const interval = setInterval(() => {
       advanced += framesPerTick;
       if (advanced >= frameCount) {
+        oneShotDoneRef.current = true;
         setFrameIndex(frameCount - 1);
         clearInterval(interval);
         return;
@@ -98,7 +161,7 @@ export default function AnimatedEmote({ emote, width, height, accessibilityLabel
     }, tickMs);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- modifiersKey stands in for modifiers, see above
-  }, [emote.animation, frames, paused, isOneShot, modifiersKey]);
+  }, [emote.animation, frames, paused, isOneShot, modifiersKey, animationsActive]);
 
   // Looping: subscribe to (and, if needed, start) the shared clock for this
   // emote — every mounted instance ends up rendering the same frameIndex.
@@ -123,7 +186,7 @@ export default function AnimatedEmote({ emote, width, height, accessibilityLabel
     // here would flash the same garbled wide-sheet render this component
     // exists to avoid. Name-as-text is a known-safe inline placeholder
     // (same fallback used while the whole emote index is still loading).
-    return <Text style={{ fontStyle: 'italic' }}>{accessibilityLabel}</Text>;
+    return <Text style={placeholderStyle}>{accessibilityLabel}</Text>;
   }
   // `reverse` just flips which end of the (shared, cached) frame list we
   // index from rather than mutating it.
@@ -137,3 +200,6 @@ export default function AnimatedEmote({ emote, width, height, accessibilityLabel
     />
   );
 }
+
+const AnimatedEmote = Platform.OS === 'android' ? NativeAnimatedEmote : FrameAnimatedEmote;
+export default AnimatedEmote;

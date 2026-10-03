@@ -7,6 +7,39 @@ the release process itself.
 
 ## [Unreleased]
 
+### Added
+- Long-press a nick for a menu: the stream they're watching (with its color bar, tap to open
+  it on strims.gg), Mention, Whisper, Highlight messages, Set name color, and Ignore. Ignored
+  users' messages are hidden; they're listed in Settings, tap to unignore.
+- Message timestamps, with a Settings choice of Off / `HH:MM` / `HH:MM:SS` (default `HH:MM`).
+- Connection status: "Reconnecting…" after 5s without a connection, "Disconnected" with a
+  Retry button after 15s (automatic retrying stops there), and a small green dot next to
+  "Chat" while connected.
+- Settings → "Animate emotes forever". Off by default: emotes play chat-gui's loop count and
+  rest on their last frame, as on desktop.
+
+### Changed
+- Android: animated emotes are encoded once into animated WebP and played natively, instead
+  of stepping frames from JS. Chat with animated emotes on screen went from keeping a CPU core
+  busy (~55-77% in a release build) to ~7%.
+- Chat rows only re-render when their own content changes, not on every new message.
+
+### Fixed
+- The Android back button always closed the app. It now closes Settings, then returns to the
+  Chat tab, then exits.
+- Leaving Settings rebuilt the chat (reconnect, history reload, jump to bottom). Chat now stays
+  loaded underneath Settings.
+- Auto-scroll could switch itself off without any touch (e.g. after switching tabs) and landed
+  ~40px short of the newest message. It now only stops following when you drag, and scrolls to
+  the exact end. Rows you're reading no longer drift as old messages are trimmed.
+- On reopen, a failed history fetch was never retried, leaving the previous session's
+  scrollback on screen. History now retries with backoff, is merged with live messages instead
+  of replacing them, and a "History may be out of date ↻ Reload" note shows while it's stale.
+- `/w nick message` (and chat-gui's other whisper aliases) was posted to public chat. It's now
+  sent as a whisper.
+- Animated emotes went blank after a chat-gui deploy changed asset URLs; a 404 now refetches
+  the emote index once.
+
 ## [0.2.0] - 2026-08-24
 
 ### Added

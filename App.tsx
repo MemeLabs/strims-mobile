@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, StatusBar, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, AppState, BackHandler, StatusBar, StyleSheet, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import LoginScreen from './src/auth/LoginScreen';
 import ChatScreen from './src/screens/ChatScreen';
@@ -12,6 +12,8 @@ import { clearSession, loadSession } from './src/storage/session';
 import { configureBackgroundFetch } from './src/streams/backgroundFetch';
 import { refreshEmoteIndex } from './src/chat/emotes';
 import { refreshEmoteFrames } from './src/chat/emoteFrames';
+import { refreshEmoteWebps } from './src/chat/emoteWebp';
+import { setEmoteAnimationsActive } from './src/chat/emoteClock';
 import { checkForUpdate, type AvailableUpdate } from './src/update/checkForUpdate';
 import { installUpdate } from './src/update/installUpdate';
 
@@ -26,6 +28,7 @@ export default function App() {
   // so it knows to re-fetch the (otherwise never-expiring, see emotes.ts)
   // emote index instead of only ever loading it once on mount.
   const [emoteRefreshKey, setEmoteRefreshKey] = useState(0);
+  const [chatConnected, setChatConnected] = useState(false);
 
   useEffect(() => {
     loadSession()
@@ -42,6 +45,35 @@ export default function App() {
     checkForUpdate().then(setUpdateAvailable);
   }, []);
 
+  // Navigation is plain state, so Android's back button has no native stack
+  // to pop — map it onto that state ourselves: Settings → close it, other
+  // tab → back to chat, otherwise fall through and let the app exit.
+  // (Modals handle back themselves via onRequestClose.)
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (settingsVisible) {
+        setSettingsVisible(false);
+        return true;
+      }
+      if (tab !== 'chat') {
+        setTab('chat');
+        return true;
+      }
+      return false;
+    });
+    return () => sub.remove();
+  }, [settingsVisible, tab]);
+
+  // Emote animations only run while chat is actually on screen.
+  const [appActive, setAppActive] = useState(AppState.currentState === 'active');
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', state => setAppActive(state === 'active'));
+    return () => sub.remove();
+  }, []);
+  useEffect(() => {
+    setEmoteAnimationsActive(appActive && !!jwt && tab === 'chat' && !settingsVisible);
+  }, [appActive, jwt, tab, settingsVisible]);
+
   const onLogout = async () => {
     await clearSession();
     setSettingsVisible(false);
@@ -50,6 +82,7 @@ export default function App() {
 
   const onRefreshEmotes = async () => {
     await refreshEmoteFrames();
+    await refreshEmoteWebps();
     await refreshEmoteIndex();
     setEmoteRefreshKey(k => k + 1);
   };
@@ -64,32 +97,30 @@ export default function App() {
           // Top inset is handled once here, above the title bar — the
           // screens below no longer apply their own top safe-area edge.
           <SafeAreaView style={styles.root} edges={['top']}>
-            {settingsVisible ? (
+            {settingsVisible && (
               <SettingsScreen
                 onClose={() => setSettingsVisible(false)}
                 onLogout={onLogout}
                 onRefreshEmotes={onRefreshEmotes}
               />
-            ) : (
-              <>
-                <TitleBar
-                  onPressSettings={() => setSettingsVisible(true)}
-                  updateAvailable={updateAvailable}
-                  onPressUpdate={() => setUpdateModalVisible(true)}
-                />
-                <TabBar active={tab} onChange={setTab} />
-                {/* Both screens stay mounted once loaded — switching tabs
-                    only toggles visibility, so chat's socket/catch-up state
-                    and the streams list survive tab swaps instead of
-                    reloading from scratch each time. */}
-                <View style={tab === 'chat' ? styles.flexVisible : styles.hidden}>
-                  <ChatScreen jwt={jwt} emoteRefreshKey={emoteRefreshKey} />
-                </View>
-                <View style={tab === 'streams' ? styles.flexVisible : styles.hidden}>
-                  <StreamsScreen />
-                </View>
-              </>
             )}
+            {/* Chat and streams stay mounted under Settings too, not just
+                across tab swaps — unmounting chat for Settings meant a fresh
+                socket + catch-up and a forced scroll-to-end on every return. */}
+            <View style={settingsVisible ? styles.hidden : styles.flexVisible}>
+              <TitleBar
+                onPressSettings={() => setSettingsVisible(true)}
+                updateAvailable={updateAvailable}
+                onPressUpdate={() => setUpdateModalVisible(true)}
+              />
+              <TabBar active={tab} onChange={setTab} chatConnected={chatConnected} />
+              <View style={tab === 'chat' ? styles.flexVisible : styles.hidden}>
+                <ChatScreen jwt={jwt} emoteRefreshKey={emoteRefreshKey} onConnectedChange={setChatConnected} />
+              </View>
+              <View style={tab === 'streams' ? styles.flexVisible : styles.hidden}>
+                <StreamsScreen />
+              </View>
+            </View>
           </SafeAreaView>
         ) : (
           // Needs the same top-inset treatment as the authed view above —

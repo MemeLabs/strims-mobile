@@ -1,6 +1,18 @@
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import {
+  Platform,
+  StyleSheet,
+  Switch,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { getEmoteIndexUpdatedAt } from '../chat/emotes';
+import {
+  setPreference,
+  usePreference,
+  type TimestampFormat,
+} from '../storage/preferences';
 import pkg from '../../package.json';
 
 interface Props {
@@ -16,8 +28,21 @@ function formatDate(timestamp: number): string {
   return `${mm}/${dd}/${d.getFullYear()}`;
 }
 
-export default function SettingsScreen({ onClose, onLogout, onRefreshEmotes }: Props) {
+const TIMESTAMP_OPTIONS: { value: TimestampFormat; label: string }[] = [
+  { value: 'off', label: 'Off' },
+  { value: 'hm', label: '12:34' },
+  { value: 'hms', label: '12:34:56' },
+];
+
+export default function SettingsScreen({
+  onClose,
+  onLogout,
+  onRefreshEmotes,
+}: Props) {
   const [refreshing, setRefreshing] = useState(false);
+  const animateForever = usePreference('animateEmotesForever');
+  const timestampFormat = usePreference('timestampFormat');
+  const ignoredNicks = usePreference('ignoredNicks');
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
 
   useEffect(() => {
@@ -52,10 +77,79 @@ export default function SettingsScreen({ onClose, onLogout, onRefreshEmotes }: P
           <Text style={styles.emotesLabel}>
             Emotes last updated: {updatedAt ? formatDate(updatedAt) : '—'}
           </Text>
-          <TouchableOpacity style={styles.refreshButton} onPress={handleRefresh} disabled={refreshing}>
-            <Text style={styles.refreshText}>{refreshing ? 'Refreshing…' : 'Refresh'}</Text>
+          <TouchableOpacity
+            style={styles.refreshButton}
+            onPress={handleRefresh}
+            disabled={refreshing}
+          >
+            <Text style={styles.refreshText}>
+              {refreshing ? 'Refreshing…' : 'Refresh'}
+            </Text>
           </TouchableOpacity>
         </View>
+
+        {/* Only the Android (native WebP) emote path has a finite loop
+            count to override; the iOS frame path already loops forever. */}
+        {Platform.OS === 'android' && (
+          <View style={styles.emotesRow}>
+            <Text style={styles.emotesLabel}>Animate emotes forever</Text>
+            <Switch
+              value={animateForever}
+              onValueChange={value =>
+                setPreference('animateEmotesForever', value)
+              }
+            />
+          </View>
+        )}
+
+        <View style={styles.emotesRow}>
+          <Text style={styles.emotesLabel}>Timestamps</Text>
+          <View style={styles.segmented}>
+            {TIMESTAMP_OPTIONS.map(option => {
+              const selected = option.value === timestampFormat;
+              return (
+                <TouchableOpacity
+                  key={option.value}
+                  style={[styles.segment, selected && styles.segmentSelected]}
+                  onPress={() => setPreference('timestampFormat', option.value)}
+                >
+                  <Text
+                    style={[
+                      styles.segmentText,
+                      selected && styles.segmentTextSelected,
+                    ]}
+                  >
+                    {option.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+
+        {/* Ignored users' messages are hidden, so this is the only place to
+            find them again. */}
+        {ignoredNicks.length > 0 && (
+          <View style={[styles.emotesRow, styles.ignoredRow]}>
+            <Text style={styles.emotesLabel}>Ignored users</Text>
+            <View style={styles.ignoredList}>
+              {ignoredNicks.map(nick => (
+                <TouchableOpacity
+                  key={nick}
+                  style={styles.ignoredChip}
+                  onPress={() =>
+                    setPreference(
+                      'ignoredNicks',
+                      ignoredNicks.filter(n => n !== nick),
+                    )
+                  }
+                >
+                  <Text style={styles.ignoredChipText}>{nick} ✕</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
 
         <TouchableOpacity style={styles.logoutButton} onPress={onLogout}>
           <Text style={styles.logoutText}>Log out</Text>
@@ -105,6 +199,29 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   refreshText: { color: '#7fc4f7', fontSize: 14, fontWeight: '600' },
+  ignoredRow: { flexDirection: 'column', alignItems: 'flex-start' },
+  ignoredList: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 8 },
+  ignoredChip: {
+    borderWidth: 1,
+    borderColor: '#444',
+    borderRadius: 12,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    marginRight: 6,
+    marginBottom: 6,
+  },
+  ignoredChipText: { color: '#ccc', fontSize: 13 },
+  segmented: {
+    flexDirection: 'row',
+    borderWidth: 1,
+    borderColor: '#2f5c7a',
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  segment: { paddingVertical: 6, paddingHorizontal: 10 },
+  segmentSelected: { backgroundColor: '#132a3a' },
+  segmentText: { color: '#888', fontSize: 13 },
+  segmentTextSelected: { color: '#7fc4f7', fontWeight: '600' },
   logoutButton: {
     backgroundColor: '#3a1414',
     borderWidth: 1,

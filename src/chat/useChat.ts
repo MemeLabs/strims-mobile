@@ -1,30 +1,34 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
 import ChatSource from './source';
-import { catchUp } from './api';
+import { fetchHistory, fetchMe, fetchViewerStates } from './api';
 import { loadCachedMessages, saveCachedMessages } from './messageCache';
-import { parseFrame } from './frame';
+import { decodeHistory, MAX_MESSAGES, mergeHistory } from './history';
+import { parseWhisper } from './commands';
 import { DEFAULT_CONFIG } from '../config/env';
 import { makeLogger } from '../log';
 import type { ChatMessage, ChatUser, ViewerChannel, ViewerState } from './types';
 
 const log = makeLogger('use-chat');
 
-function decodeHistory(lines: string[]): ChatMessage[] {
-  return lines
-    .map(line => parseFrame(line))
-    .filter((frame): frame is { event: string; data: ChatMessage } => frame.event === 'MSG')
-    .map(frame => frame.data);
-}
+const HISTORY_RETRY_DELAYS_MS = [2000, 5000, 10000, 20000, 30000];
 
-const MAX_MESSAGES = 200;
+// The whole outage, not just the socket's current attempt: the socket
+// flips between connecting/closed on every retry, which used to restart
+// the banner timer each time so it never showed.
+//  open         — connected
+//  connecting   — lost (or not yet up) for < RECONNECTING_AFTER_MS
+//  reconnecting — still retrying, shown to the user
+//  disconnected — gave up after GIVE_UP_AFTER_MS; reconnect() starts over
+export type ConnectionPhase = 'open' | 'connecting' | 'reconnecting' | 'disconnected';
 
-export type ConnectionStatus = 'connecting' | 'open' | 'closed';
+const RECONNECTING_AFTER_MS = 5000;
+const GIVE_UP_AFTER_MS = 15000;
 
 export function useChat(jwt: string) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [me, setMe] = useState<ChatUser | null>(null);
-  const [status, setStatus] = useState<ConnectionStatus>('connecting');
+  const [connection, setConnection] = useState<ConnectionPhase>('connecting');
   // Bumped on every successful catch-up (initial load + every reconnect) so
   // the screen can force-scroll to the latest message. We can't rely on
   // FlatList's onContentSizeChange for this: a reconnect's history batch is
@@ -54,6 +58,35 @@ export function useChat(jwt: string) {
   // async read resolves after the real thing already arrived.
   const hasRealDataRef = useRef(false);
   const lastAppState = useRef<AppStateStatus>('active');
+  // A history fetch has failed and is being retried; what's on screen may be
+  // the saved scrollback from the last session.
+  const [historyStale, setHistoryStale] = useState(false);
+  const outageTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const inOutageRef = useRef(false);
+
+  const clearOutage = useCallback(() => {
+    outageTimers.current.forEach(clearTimeout);
+    outageTimers.current = [];
+    inOutageRef.current = false;
+  }, []);
+
+  // Starts the outage clock unless one is already running, so repeated
+  // retry failures don't push the deadlines back.
+  const startOutage = useCallback(() => {
+    if (inOutageRef.current) {
+      return;
+    }
+    inOutageRef.current = true;
+    setConnection('connecting');
+    outageTimers.current = [
+      setTimeout(() => setConnection('reconnecting'), RECONNECTING_AFTER_MS),
+      setTimeout(() => {
+        log.warn(`no connection after ${GIVE_UP_AFTER_MS}ms, giving up until retried`);
+        sourceRef.current?.cancelRetries();
+        setConnection('disconnected');
+      }, GIVE_UP_AFTER_MS),
+    ];
+  }, []);
 
   const applyViewerState = useCallback((state: ViewerState) => {
     const key = state.nick.toLowerCase();
@@ -69,38 +102,78 @@ export function useChat(jwt: string) {
   }, []);
 
   const runCatchUp = useCallback(async () => {
-    const startedAt = Date.now();
     const requestId = ++catchUpRequestId.current;
-    try {
-      const { me: meResponse, history, viewerStates: fetchedViewerStates } = await catchUp(jwt);
-      if (requestId !== catchUpRequestId.current) {
-        log.info(`discarding stale catch-up response (request ${requestId}, latest is ${catchUpRequestId.current})`);
+    const isCurrent = () => requestId === catchUpRequestId.current;
+
+    // Best-effort and independent of history: previously all three went
+    // through one Promise.all, so a /me hiccup threw away good history too.
+    fetchMe(jwt)
+      .then(r => isCurrent() && setMe({ nick: r.nick, features: r.features }))
+      .catch(err => log.warn('fetching /me failed', err));
+    fetchViewerStates(jwt)
+      .then(
+        states =>
+          isCurrent() &&
+          setViewerStates(
+            new Map(
+              states
+                .filter(s => s.online)
+                .map(s => [s.nick.toLowerCase(), { nick: s.nick, channel: s.channel ?? null }]),
+            ),
+          ),
+      )
+      .catch(err => log.warn('fetching viewer states failed', err));
+
+    // History retries until it lands (or a newer catch-up / backgrounding
+    // supersedes this one). A failed fetch used to just log, leaving the
+    // saved scrollback from the last session on screen indefinitely with
+    // live messages appended after it.
+    for (let attempt = 0; ; attempt++) {
+      const startedAt = Date.now();
+      try {
+        const history = decodeHistory(await fetchHistory(jwt));
+        if (!isCurrent()) {
+          log.info(`discarding stale catch-up response (request ${requestId}, latest is ${catchUpRequestId.current})`);
+          return;
+        }
+        hasRealDataRef.current = true;
+        setMessages(prev => mergeHistory(history, prev));
+        setHistoryStale(false);
+        setCatchUpCount(n => n + 1);
+        log.info(`catch-up ok in ${Date.now() - startedAt}ms (${history.length} history messages)`);
         return;
+      } catch (err) {
+        if (!isCurrent()) {
+          return;
+        }
+        setHistoryStale(true);
+        const delay = HISTORY_RETRY_DELAYS_MS[Math.min(attempt, HISTORY_RETRY_DELAYS_MS.length - 1)];
+        log.warn(`history fetch failed after ${Date.now() - startedAt}ms, retrying in ${delay}ms`, err);
+        await new Promise<void>(resolve => setTimeout(resolve, delay));
+        if (!isCurrent()) {
+          return;
+        }
       }
-      hasRealDataRef.current = true;
-      setMe({ nick: meResponse.nick, features: meResponse.features });
-      setMessages(decodeHistory(history.slice(-MAX_MESSAGES)));
-      setViewerStates(
-        new Map(
-          fetchedViewerStates
-            .filter(s => s.online)
-            .map(s => [s.nick.toLowerCase(), { nick: s.nick, channel: s.channel ?? null }]),
-        ),
-      );
-      setCatchUpCount(n => n + 1);
-      log.info(`catch-up ok in ${Date.now() - startedAt}ms (${history.length} history lines)`);
-    } catch (err) {
-      log.warn(`catch-up failed after ${Date.now() - startedAt}ms`, err);
     }
   }, [jwt]);
 
   useEffect(() => {
     const source = new ChatSource();
+    // The counter object itself, not its value: cleanup bumps it.
+    const catchUpRequests = catchUpRequestId;
     sourceRef.current = source;
 
-    source.on('CONNECTING', () => setStatus('connecting'));
-    source.on('OPEN', () => setStatus('open'));
-    source.on('CLOSE', () => setStatus('closed'));
+    source.on('OPEN', () => {
+      clearOutage();
+      setConnection('open');
+    });
+    source.on('CLOSE', () => {
+      // Deliberate disconnects (backgrounding, giving up, unmount) turn
+      // retrying off first; those aren't outages.
+      if (source.retryOnDisconnect) {
+        startOutage();
+      }
+    });
 
     source.on('MSG', (data: ChatMessage) => {
       hasRealDataRef.current = true;
@@ -134,14 +207,17 @@ export function useChat(jwt: string) {
     // still re-runs catch-up once connected, so history isn't lost — this
     // one and that one just race, and whichever resolves first paints.
     runCatchUp();
+    startOutage();
     source.connect(DEFAULT_CONFIG.websocketUri, jwt);
 
     return () => {
-      source.retryOnDisconnect = false;
-      source.disconnect();
+      clearOutage();
+      source.stopRetrying();
+      // Supersedes any in-flight/retrying history fetch.
+      catchUpRequests.current++;
       sourceRef.current = null;
     };
-  }, [jwt, runCatchUp, applyViewerState]);
+  }, [jwt, runCatchUp, applyViewerState, startOutage, clearOutage]);
 
   // Paints something real immediately on a cold start instead of a blank
   // list while catch-up/connect (above) are still in flight — see
@@ -179,11 +255,11 @@ export function useChat(jwt: string) {
       lastAppState.current = nextState;
       const source = sourceRef.current;
       if (nextState === 'active') {
-        setStatus('connecting');
         runCatchUp();
         if (source && !source.isConnected() && !source.isConnecting()) {
-          source.retryOnDisconnect = true;
-          source.connect(DEFAULT_CONFIG.websocketUri, jwt);
+          clearOutage();
+          startOutage();
+          source.reconnect(DEFAULT_CONFIG.websocketUri, jwt);
         }
       } else if (source) {
         // A backgrounded app has no UI to reflect live messages into, so an
@@ -196,17 +272,46 @@ export function useChat(jwt: string) {
         // resuming fresh on foreground — same catch-up path as a cold
         // start — is simpler and cheaper than trying to keep a background
         // connection alive.
-        source.retryOnDisconnect = false;
-        source.disconnect();
+        clearOutage();
+        source.stopRetrying();
+        // No point retrying history in the background; resume restarts it.
+        catchUpRequestId.current++;
       }
     };
     const sub = AppState.addEventListener('change', onAppStateChange);
     return () => sub.remove();
-  }, [jwt, runCatchUp]);
+  }, [jwt, runCatchUp, startOutage, clearOutage]);
 
   const sendMessage = useCallback((text: string) => {
+    const whisper = parseWhisper(text);
+    if (whisper) {
+      sourceRef.current?.send('PRIVMSG', whisper);
+      return;
+    }
     sourceRef.current?.send('MSG', { data: text });
   }, []);
 
-  return { messages, me, status, sendMessage, catchUpCount, viewerStates };
+  // The banner's retry button: fresh outage clock, short backoff, dial now.
+  const reconnect = useCallback(() => {
+    const source = sourceRef.current;
+    if (!source) {
+      return;
+    }
+    clearOutage();
+    startOutage();
+    runCatchUp();
+    source.reconnect(DEFAULT_CONFIG.websocketUri, jwt);
+  }, [jwt, runCatchUp, startOutage, clearOutage]);
+
+  return {
+    messages,
+    me,
+    connection,
+    reconnect,
+    sendMessage,
+    catchUpCount,
+    viewerStates,
+    historyStale,
+    reloadHistory: runCatchUp,
+  };
 }

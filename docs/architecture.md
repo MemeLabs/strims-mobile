@@ -5,30 +5,45 @@
 `App.tsx` owns three pieces of top-level state: the logged-in `jwt` (persisted via
 `src/storage/session.ts`, backed by `react-native-keychain`), the active tab (`chat` | `streams`),
 and whether the Settings screen is showing. `ChatScreen` and `StreamsScreen` are both mounted for
-the lifetime of the logged-in session — switching tabs only toggles `display: 'none'` on their
-wrapping `View`, it never unmounts them. This is deliberate: unmounting `ChatScreen` on every tab
-swap used to tear down its websocket and force a full REST catch-up + reconnect each time you came
-back to Chat, which was slow and visually jarring. Settings is a real overlay (conditionally
-rendered, not display-toggled) since it has no state worth preserving across visits.
+the lifetime of the logged-in session — switching tabs or opening Settings only toggles
+`display: 'none'` on their wrapping `View`, it never unmounts them. This is deliberate: unmounting
+`ChatScreen` used to tear down its websocket and force a full REST catch-up + reconnect (and a
+forced scroll-to-end) each time you came back to Chat, which was slow and visually jarring.
+Settings itself is conditionally rendered on top since it has no state worth preserving.
+
+Navigation is plain state, so `App.tsx` maps Android's hardware back onto it: close Settings, else
+return to the Chat tab, else let the app exit. Modals handle back via `onRequestClose`. On iOS,
+`App.tsx` also gates the JS emote clock (`setEmoteAnimationsActive` in `src/chat/emoteClock.ts`) to
+only run while the app is foregrounded and Chat is the visible screen; Android emotes are played
+natively (see emotes.md) and need no gate.
 
 ## `src/chat` — the Chat tab
 
-- **`source.ts`** (`ChatSource`) — the websocket client. Owns connect/reconnect/backoff, heartbeat
-  pause/resume (paused while the app is backgrounded, resumed on foreground — see `useChat.ts`),
+- **`source.ts`** (`ChatSource`) — the websocket client. Owns connect/reconnect/backoff (with
+  `cancelRetries`/`stopRetrying`/`reconnect` for `useChat`; disconnected while backgrounded),
   and frame parsing via `frame.ts` (chat.strims.gg's `EVENTNAME {json}` wire format). Emits events
   through `emitter.ts`, a small typed event emitter.
-- **`api.ts`** — REST catch-up: `/api/chat/history`, `/api/chat/me`, `/api/chat/viewer-states`.
-  Called on initial mount, on every websocket reconnect, and on app foreground.
+- **`api.ts`** — REST catch-up: `/api/chat/history`, `/api/chat/me`, `/api/chat/viewer-states`
+  (15s timeout each). Called on initial mount, on every websocket reconnect, and on app
+  foreground. `useChat` fetches them independently: `/me` and viewer states are best-effort,
+  history retries with backoff (2s…30s) until it lands, and is merged with live messages by
+  timestamp (`history.ts` `mergeHistory`) instead of replacing them.
+- **`commands.ts`** — client-side command parsing; `/w` and its chat-gui aliases are sent as
+  `PRIVMSG` whispers.
 - **`useChat.ts`** — the hook `ChatScreen` consumes. Merges REST catch-up with live websocket
   events into `messages`/`me`/`viewerStates`, and handles the two known Android-specific races
   documented inline: duplicate `AppState` `'active'` events firing for a single foreground, and
   overlapping catch-up requests resolving out of order (guarded with a monotonic request ID so a
-  stale response can't clobber a fresher one).
+  stale response can't clobber a fresher one). Also tracks the whole outage as a
+  `ConnectionPhase` (`open` | `connecting` | `reconnecting` after 5s | `disconnected` after 15s),
+  which drives `ChatScreen`'s banner and the tab bar's connected dot. At 15s it stops scheduling
+  redials (an in-flight handshake may still finish) until the banner's Retry calls `reconnect()`.
 - **`messageFormat.ts`** — turns a raw message string into typed segments (`text` | `link` |
   `emote`), porting chat-gui's `UrlFormatter` link-rewrite rules (strims.gg/youtube/twitch/etc
   short-form display, tracking-param stripping) and emote-with-modifier parsing (`NAME:modifier`).
-- **`emotes.ts`**, **`emoteFrames.ts`**, **`emoteModifiers.ts`** — see
-  [emotes.md](emotes.md).
+- **`emotes.ts`**, **`emoteWebp.ts`** (Android), **`emoteFrames.ts`** (iOS),
+  **`emoteModifiers.ts`** — see [emotes.md](emotes.md). User settings (animate-forever, timestamp
+  format) live in `src/storage/preferences.ts` (`usePreference`/`setPreference`).
 - **`combo.ts`** — collapses consecutive identical single-emote messages into an "xN" combo row,
   matching chat-gui's `chat.js` combo behavior.
 - **`viewerColor.ts`** — deterministic per-channel color (FNV-1a hash seeded RNG), ported from
@@ -61,7 +76,8 @@ rendered, not display-toggled) since it has no state worth preserving across vis
 | `react-native-webview` | OAuth login flow (`src/auth/LoginScreen.tsx`) |
 | `@preeternal/react-native-cookie-manager` | extracting the `jwt` cookie after WebView login |
 | `@react-native-async-storage/async-storage` | emote index cache, nick colors, follows |
-| `@react-native-community/image-editor` | cropping animated-emote spritesheet frames (see emotes.md) |
+| `@react-native-community/image-editor` | iOS: cropping animated-emote spritesheet frames (see emotes.md) |
+| `com.facebook.fresco:animated-webp` / `webpsupport` (Gradle) | Android: native animated-emote playback |
 | `react-native-google-cast` | Chromecast |
 | `@notifee/react-native` | local "stream went live" notifications |
 

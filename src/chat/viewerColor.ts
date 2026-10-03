@@ -3,6 +3,7 @@ import type { ViewerChannel } from './types';
 // Port of chat-gui/assets/chat/js/viewerstate.ts — the color of a viewer's
 // name bar is deterministically derived from the channel they're watching,
 // so it's the same color for everyone across every client.
+/* eslint-disable no-bitwise -- hash arithmetic */
 function fnv1a(input: string): number {
   let hash = 2166136261;
   for (let i = 0; i < input.length; i++) {
@@ -11,6 +12,7 @@ function fnv1a(input: string): number {
   }
   return hash >>> 0;
 }
+/* eslint-enable no-bitwise */
 
 function createRng(seed: string): () => number {
   let n = 0;
@@ -28,7 +30,9 @@ function generateColor(rng: () => number): string {
 // bar reads as "off" rather than drawing attention.
 export const NO_CHANNEL_COLOR = '#292929';
 
-export function viewerChannelColor(channel: ViewerChannel | null | undefined): string {
+// Only channel + service feed the color, so callers without a path (e.g. a
+// stream listing) can use it too.
+export function viewerChannelColor(channel: Pick<ViewerChannel, 'channel' | 'service'> | null | undefined): string {
   if (!channel) {
     return NO_CHANNEL_COLOR;
   }

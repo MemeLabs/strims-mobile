@@ -114,13 +114,15 @@ function ensurePersistDir(): Promise<void> {
 // Cheap non-cryptographic hash (djb2) — just needs to turn an emote key
 // (which contains a full URL, unsafe as a filename) into a short, stable,
 // filesystem-safe id.
-function hashKey(key: string): string {
+/* eslint-disable no-bitwise -- hash arithmetic */
+export function hashKey(key: string): string {
   let hash = 5381;
   for (let i = 0; i < key.length; i++) {
     hash = (hash * 33) ^ key.charCodeAt(i);
   }
   return (hash >>> 0).toString(36);
 }
+/* eslint-enable no-bitwise */
 
 async function cropFrame(
   uri: string,

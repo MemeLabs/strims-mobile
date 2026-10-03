@@ -21,13 +21,46 @@ Android** — confirmed empirically by freezing the animation at frame 0 (still 
 a timing/interpolation bug. This is a layout bug in Android's inline-Text-child handling of
 transformed/clipped children, not something fixable from the animation-timing side.
 
-## The solution: real per-frame files
+## The solution
+
+Both platforms end up rendering a plain inline `<Image>`, never a clipping/transformed wrapper.
+
+### Android: native animated WebP
+
+`src/chat/emoteWebp.ts` asks the native `EmoteWebp` module
+(`android/app/src/main/java/com/strimsmobile/EmoteWebpModule.kt`) to turn the spritesheet into an
+animated WebP file once per emote variant, then `AnimatedEmote.tsx` renders it as a single
+`<Image>`. Fresco (`animated-webp`/`webpsupport`, `android/app/build.gradle`) plays it natively,
+so no JS runs per frame — the equivalent of the browser compositor playing chat-gui's CSS.
+
+The earlier approach stepped frames from JS (`setState` per frame per emote). Each step was a
+full React commit of the chat tree; with a few animated emotes on screen that kept a CPU core
+busy. With native playback, rendering costs nothing between messages.
+
+- The encoder crops frames with `Bitmap.createBitmap`, compresses each with the platform's
+  `Bitmap.compress(WEBP_LOSSLESS)` and wraps them in the animated-WebP RIFF container itself
+  (`VP8X` + `ANIM` + one `ANMF` per frame). Only image chunks (`ALPH`/`VP8 `/`VP8L`) may sit
+  inside `ANMF`; the platform encoder's `ICCP` colour profile must be dropped or the file is
+  undecodable.
+- Decoders bump frame durations of ≤10ms to 100ms, so frames faster than 20ms are skipped (the
+  loop keeps its real length) rather than played in slow motion.
+- `:fast`/`:slow`/`:reverse`/`:pause` are baked into the file (one file per variant). Files are
+  named from emote + variant + `FORMAT_VERSION`, so the file existing *is* the cache. Bump
+  `FORMAT_VERSION` whenever the encoder output changes.
+- Loop count follows chat-gui: an emote plays its CSS iteration count (NODDERS: 16) and rests on
+  its last frame, like on desktop; `:fast` doubles the count to keep total play time, `:slow`
+  keeps it. Settings → "Animate emotes forever" (`src/storage/preferences.ts`) loops forever instead, like
+  desktop's hover / `-animate-forever`.
+- A 404 on a spritesheet means chat-gui redeployed with new content hashes since the cached
+  emote index was fetched. `reportStaleEmoteIndex` (`emotes.ts`) refetches the index once per
+  app run and pushes it to `ChatScreen`; the dead URL is not retried.
+
+### iOS: per-frame files
 
 `src/chat/emoteFrames.ts` crops each animated emote's spritesheet into one real image file per
 frame, using `@react-native-community/image-editor`'s `ImageEditor.cropImage()`, then
-`src/components/AnimatedEmote.tsx` cycles a plain `<Image>`'s `source` through those files on a
-`setInterval`. A plain `Image` swapping `source` needs no wrapping `View` or transform, so — unlike
-the clip-and-translate approach — it renders correctly inline.
+`src/components/AnimatedEmote.tsx` cycles a plain `<Image>`'s `source` through those files from a
+shared clock (`emoteClock.ts`), paused while chat isn't visible.
 
 Notes on the implementation:
 - Frames are cropped once per `(emote name, source uri)` and cached in memory for the app's
@@ -36,14 +69,9 @@ Notes on the implementation:
   once. High-frame-count emotes (catJAM has 158 frames) were found to overwhelm the native bridge
   if all frames are cropped via a single `Promise.all` — some crops would silently hang, and the
   emote would flicker for a couple of frames then go blank.
-- Playback uses `setInterval`, not `Animated.timing`. `Animated.timing({ duration: 0 })` does not
-  reliably produce an instant frame jump across RN versions; a plain interval driving `useState`
-  is the simplest thing that reliably jumps discretely.
 - A `MIN_TICK_MS` (40ms) floor is enforced on the tick interval, since JS-timer-driven stepping
-  can't reliably hit intervals faster than that (bridge/render round-trip overhead). For emotes
-  whose real per-frame duration is faster than that (e.g. WAYTOODANK: 90 frames / 1800ms = 20ms/
-  frame), multiple frames are advanced per tick (`framesPerTick`) rather than freezing — the loop
-  still completes in roughly its real duration and visibly animates, just at a coarser step.
+  can't reliably hit intervals faster than that. For faster emotes (e.g. WAYTOODANK: 90 frames /
+  1800ms = 20ms/frame), multiple frames are advanced per tick (`framesPerTick`).
 
 ## Don't trust chat-gui's CSS cascade naively
 
@@ -67,9 +95,9 @@ They fall into three tiers by how well they map onto RN:
   `transform: scaleX/scaleY` (direct RN equivalents of chat-gui's flat CSS transform rules);
   `spin` is a fixed 0.8s×3 rotation loop (`useSpinRotation`, an `Animated.Value` interpolated to
   `deg`, using `useNativeDriver: false` — mixing `useNativeDriver: true` with inline-Text-child
-  Images has shown rendering bugs before, see above); `fast`/`slow`/`reverse`/`pause` hook directly
-  into `AnimatedEmote`'s existing frame-timing logic (`speedMultiplier`, index-from-the-end for
-  reverse, skipping the interval entirely for pause).
+  Images has shown rendering bugs before, see above); `fast`/`slow`/`reverse`/`pause` are baked
+  into the encoded WebP on Android, and on iOS hook into the frame-timing logic
+  (`speedMultiplier`, index-from-the-end for reverse, skipping the interval entirely for pause).
 - **Not ported**: everything else (`rain`, `snow`, `love`, `worth`, `jam`, `hyper`, `pride`,
   `noir`, `blur`, `gray`, `banned`, `virus`, `slide`, `peek`, ...). These are animated sprite
   overlays or CSS `filter` effects layered on top of the base emote — RN has no `filter` support

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   FlatList,
@@ -14,14 +14,16 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  type TextInputInstance,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useChat } from '../chat/useChat';
-import { getEmoteIndexUpdatedAt, loadEmoteIndex, type EmoteInfo } from '../chat/emotes';
+import { getEmoteIndexUpdatedAt, loadEmoteIndex, subscribeToEmoteIndex, type EmoteInfo } from '../chat/emotes';
 import { formatMessage, isGreenText, isMention } from '../chat/messageFormat';
 import { viewerChannelColor } from '../chat/viewerColor';
 import { applyCompletion, buildSuggestions, findWordAtCursor, type Suggestion } from '../chat/autocomplete';
 import { groupCombos, type DisplayItem } from '../chat/combo';
+import { setPreference, usePreference, type TimestampFormat } from '../storage/preferences';
 import { staticTransforms, useSpinRotation } from '../chat/emoteModifiers';
 import {
   hasSeenNickColorTooltip,
@@ -30,6 +32,7 @@ import {
   setNickColor,
 } from '../chat/nickColors';
 import AnimatedEmote from '../components/AnimatedEmote';
+import NickMenu from '../components/NickMenu';
 import { loadEmoteUsageCounts, recordEmoteUsage } from '../chat/emoteUsage';
 import { makeLogger } from '../log';
 import type { ChatMessage, ViewerChannel } from '../chat/types';
@@ -43,6 +46,8 @@ interface Props {
   // thing that ever tells this screen to re-fetch it after the initial
   // mount.
   emoteRefreshKey: number;
+  // For the tab bar's connected dot.
+  onConnectedChange: (connected: boolean) => void;
 }
 
 // Some emotes are 80px+ tall at native size. Rendered inline at that size,
@@ -103,9 +108,22 @@ interface MessageRowProps {
   onPressNick: (nick: string) => void;
   onLongPressNick: (nick: string) => void;
   focusedNick: string | null;
+  timestampFormat: TimestampFormat;
 }
 
-function MessageRow({
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+// Local time, 24h, like chat-gui's default timestamp.
+function formatTimestamp(timestamp: number, format: TimestampFormat): string {
+  const d = new Date(timestamp);
+  const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  return format === 'hms' ? `${hm}:${pad2(d.getSeconds())}` : hm;
+}
+
+// Memoized (with stable callbacks + renderItem in ChatScreen) so a new
+// message only renders its own row instead of re-running formatMessage for
+// every row in the 200-message window.
+const MessageRow = memo(function MessageRowView({
   item,
   emotes,
   viewerStates,
@@ -115,6 +133,7 @@ function MessageRow({
   onPressNick,
   onLongPressNick,
   focusedNick,
+  timestampFormat,
 }: MessageRowProps) {
   const green = isGreenText(item.data);
   const mentioned = isMention(item.data, item.nick, selfNick);
@@ -144,6 +163,9 @@ function MessageRow({
           <Text style={styles.continueMarker}>› </Text>
         ) : (
           <>
+            {timestampFormat !== 'off' && (
+              <Text style={styles.timestamp}>{formatTimestamp(item.timestamp, timestampFormat)} </Text>
+            )}
             {/* borderLeftWidth/Color on a nested inline Text span doesn't
                 render on Android — a block-drawing character colored via
                 the (universally-supported) `color` style is the reliable
@@ -202,14 +224,22 @@ function MessageRow({
       </Text>
     </View>
   );
-}
+});
 
 // chat-gui's ChatEmoteMessage: no nick/attribution, just the emote (larger
 // than inline size) and an "N X C-C-C-COMBO" counter — collapsing the noise
 // of many people spamming the same emote into one line.
 const COMBO_EMOTE_HEIGHT = 36;
 
-function ComboRow({ emoteName, count, emotes }: { emoteName: string; count: number; emotes: Map<string, EmoteInfo> }) {
+const ComboRow = memo(function ComboRowView({
+  emoteName,
+  count,
+  emotes,
+}: {
+  emoteName: string;
+  count: number;
+  emotes: Map<string, EmoteInfo>;
+}) {
   const emote = emotes.get(emoteName);
   if (!emote) {
     return null;
@@ -232,22 +262,30 @@ function ComboRow({ emoteName, count, emotes }: { emoteName: string; count: numb
       </Text>
     </View>
   );
-}
+});
 
-// Reconnects are frequent and usually resolve within a couple seconds
-// (short-retry backoff, see source.ts) — flashing a banner for every single
-// blip once we already have chat history on screen is just noise. Only a
-// disconnect that's failed to recover for this long is worth calling out.
-const LONG_DISCONNECT_MS = 60000;
-
-export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
-  const { messages, me, status, sendMessage, catchUpCount, viewerStates } = useChat(jwt);
-  const [longDisconnected, setLongDisconnected] = useState(false);
+export default function ChatScreen({ jwt, emoteRefreshKey, onConnectedChange }: Props) {
+  const {
+    messages,
+    me,
+    connection,
+    reconnect,
+    sendMessage,
+    catchUpCount,
+    viewerStates,
+    historyStale,
+    reloadHistory,
+  } = useChat(jwt);
+  useEffect(() => {
+    onConnectedChange(connection === 'open');
+  }, [connection, onConnectedChange]);
   const [draft, setDraft] = useState('');
   const [selection, setSelection] = useState({ start: 0, end: 0 });
   const [emotes, setEmotes] = useState<Map<string, EmoteInfo>>(new Map());
   const [nickColors, setNickColors] = useState<Map<string, string>>(new Map());
   const [colorPickerNick, setColorPickerNick] = useState<string | null>(null);
+  // Long-press nick menu (NickMenu).
+  const [menuNick, setMenuNick] = useState<string | null>(null);
   const [emotePickerVisible, setEmotePickerVisible] = useState(false);
   const [emoteUsageCounts, setEmoteUsageCounts] = useState<Map<string, number>>(new Map());
   const [focusedNick, setFocusedNick] = useState<string | null>(null);
@@ -260,16 +298,7 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
   // parsed from scratch. Cleared for good the first time catch-up actually
   // finishes (messages.length > 0 below), never shown again after that.
   const [firstTimeSetupVisible, setFirstTimeSetupVisible] = useState(false);
-  const inputRef = useRef<TextInput>(null);
-
-  useEffect(() => {
-    if (status !== 'closed') {
-      setLongDisconnected(false);
-      return;
-    }
-    const timer = setTimeout(() => setLongDisconnected(true), LONG_DISCONNECT_MS);
-    return () => clearTimeout(timer);
-  }, [status]);
+  const inputRef = useRef<TextInputInstance>(null);
 
   useEffect(() => {
     getEmoteIndexUpdatedAt().then(updatedAt => {
@@ -284,6 +313,9 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
     // index that loadEmoteIndex() now returns.
   }, [emoteRefreshKey]);
 
+  // A stale-index refetch (see reportStaleEmoteIndex) swaps in fresh URLs.
+  useEffect(() => subscribeToEmoteIndex(setEmotes), []);
+
   useEffect(() => {
     if (messages.length > 0) {
       setFirstTimeSetupVisible(false);
@@ -296,27 +328,50 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
 
   useEffect(() => {
     loadNickColors().then(setNickColors);
-    // TEMP: force the tooltip to retrigger on every launch for visual
-    // review — revert to `hasSeenNickColorTooltip().then(seen => {...})`
-    // once confirmed.
-    tooltipSeenRef.current = false;
+    hasSeenNickColorTooltip().then(seen => {
+      tooltipSeenRef.current = seen;
+    });
   }, []);
 
   // Click toggles "focus" on that nick — dims every other message until the
   // same nick is clicked again to clear it.
-  const onPressNick = (nick: string) => {
+  const onPressNick = useCallback((nick: string) => {
     const key = nick.toLowerCase();
     setFocusedNick(prev => (prev === key ? null : key));
-  };
+  }, []);
 
-  const onLongPressNick = (nick: string) => {
+  const onLongPressNick = useCallback((nick: string) => {
     if (!tooltipSeenRef.current) {
       tooltipSeenRef.current = true;
       markNickColorTooltipSeen();
       setTooltipVisible(true);
       setTimeout(() => setTooltipVisible(false), 3000);
     }
-    setColorPickerNick(nick);
+    setMenuNick(nick);
+  }, []);
+
+  const ignoredNicks = usePreference('ignoredNicks');
+  const ignoredSet = useMemo(() => new Set(ignoredNicks), [ignoredNicks]);
+  const toggleIgnore = (nick: string) => {
+    const key = nick.toLowerCase();
+    setPreference(
+      'ignoredNicks',
+      ignoredSet.has(key) ? ignoredNicks.filter(n => n !== key) : [...ignoredNicks, key],
+    );
+  };
+
+  const insertAtCursor = (text: string) => {
+    const { text: next, cursor } = applyCompletion(draft, { start: selection.start, end: selection.start }, text);
+    setDraft(next);
+    setSelection({ start: cursor, end: cursor });
+    inputRef.current?.focus();
+  };
+
+  const startWhisper = (nick: string) => {
+    const next = `/w ${nick} `;
+    setDraft(next);
+    setSelection({ start: next.length, end: next.length });
+    inputRef.current?.focus();
   };
 
   const pickNickColor = (color: string | null) => {
@@ -326,7 +381,39 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
     setColorPickerNick(null);
   };
 
-  const displayItems = useMemo(() => groupCombos(messages, emotes), [messages, emotes]);
+  const selfNick = me?.nick ?? null;
+  const timestampFormat = usePreference('timestampFormat');
+  const renderItem = useCallback(
+    ({ item }: { item: DisplayItem }) =>
+      item.type === 'combo' ? (
+        <ComboRow emoteName={item.emoteName} count={item.count} emotes={emotes} />
+      ) : (
+        <MessageRow
+          item={item.message}
+          emotes={emotes}
+          viewerStates={viewerStates}
+          continued={item.continued}
+          selfNick={selfNick}
+          nickColors={nickColors}
+          onPressNick={onPressNick}
+          onLongPressNick={onLongPressNick}
+          focusedNick={focusedNick}
+          timestampFormat={timestampFormat}
+        />
+      ),
+    [emotes, viewerStates, selfNick, nickColors, onPressNick, onLongPressNick, focusedNick, timestampFormat],
+  );
+
+  // Ignored nicks' messages are dropped before combo grouping, so an
+  // ignored user can't break up or contribute to a combo either.
+  const displayItems = useMemo(
+    () =>
+      groupCombos(
+        ignoredSet.size ? messages.filter(m => !ignoredSet.has(m.nick.toLowerCase())) : messages,
+        emotes,
+      ),
+    [messages, emotes, ignoredSet],
+  );
 
   // "Seen in chat" half of the emote picker's sort — counted across the
   // same 200-message window useChat itself caps `messages` to (MAX_MESSAGES
@@ -378,50 +465,67 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const listRef = useRef<FlatList<DisplayItem>>(null);
   const insets = useSafeAreaInsets();
-  // Tracks whether the user is scrolled away reading history — while true,
-  // new messages/catch-ups shouldn't yank the view back to the bottom;
-  // instead show a "More messages" pill they can tap when ready.
-  const isNearBottomRef = useRef(true);
+  // "Follow mode": while true, the list stays pinned to the newest message.
+  // Only the user's own finger can turn it off (a drag, or the fling right
+  // after one). Scroll events the user didn't cause can only turn it back
+  // on. Those include our own scrollToEnd landing a little short (FlatList
+  // estimates heights for rows it hasn't drawn yet), content still settling,
+  // and the list being laid out at 0 height while hidden behind another tab
+  // or Settings. The previous version let *any* scroll event decide, so one
+  // of those could silently switch auto-scroll off for good.
+  const followingRef = useRef(true);
   const [hasNewMessages, setHasNewMessages] = useState(false);
-  // Set for the duration of any scrollToEnd call (animated or not). While
-  // true, onListScroll ignores its own nearBottom calculation — a
-  // scrollToEnd's own onScroll events can fire with contentSize still
-  // catching up to a just-changed message list (e.g. cached messages
-  // getting replaced by catch-up's fresher batch), reading as "far from
-  // bottom" for a frame or two even for a non-animated jump. Without this
-  // guard that flips isNearBottomRef back to false right after we just set
-  // it true, silently re-freezing autoscroll (or, worse, leaving the list
-  // short of the bottom with no "More messages" pill to recover with, since
-  // hasNewMessages was also just cleared).
-  const scrollingToEndRef = useRef(false);
+  const draggingRef = useRef(false);
+  // The momentum scroll after a drag still counts as the user's doing.
+  // Cleared on momentum end, or by our own next scrollToEnd.
+  const flingRef = useRef(false);
+  // Real native sizes, for an exact bottom offset. FlatList.scrollToEnd
+  // works from its own row-height estimates and was measured landing ~40px
+  // short, cutting off the newest message.
+  const contentHeightRef = useRef(0);
+  const viewportHeightRef = useRef(0);
+  // Only refs and a state setter inside, so these are stable for effects.
+  const scrollToBottom = useCallback((animated: boolean) => {
+    const offset = Math.max(0, contentHeightRef.current - viewportHeightRef.current);
+    listRef.current?.scrollToOffset({ offset, animated });
+  }, []);
 
-  const scrollToEnd = (animated: boolean) => {
-    scrollingToEndRef.current = true;
-    listRef.current?.scrollToEnd({ animated });
-    isNearBottomRef.current = true;
-    setHasNewMessages(false);
-    // onMomentumScrollEnd is the normal way this clears (see below), but it
-    // never fires for a non-animated jump (no momentum to speak of) or if
-    // the list was already at/near the bottom — without this fallback the
-    // guard would stay stuck on, freezing autoscroll for good.
-    setTimeout(() => {
-      scrollingToEndRef.current = false;
-    }, 500);
-  };
+  const scrollToEnd = useCallback(
+    (animated: boolean) => {
+      followingRef.current = true;
+      flingRef.current = false;
+      setHasNewMessages(false);
+      scrollToBottom(animated);
+    },
+    [scrollToBottom],
+  );
 
   const NEAR_BOTTOM_THRESHOLD = 120;
   const onListScroll = (e: {
     nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } };
   }) => {
-    if (scrollingToEndRef.current) {
+    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+    contentHeightRef.current = contentSize.height;
+    if (layoutMeasurement.height === 0) {
+      // Hidden (display: none). Offsets are meaningless.
       return;
     }
-    const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
     const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y;
-    const nearBottom = distanceFromBottom < NEAR_BOTTOM_THRESHOLD;
-    isNearBottomRef.current = nearBottom;
-    if (nearBottom) {
+    if (distanceFromBottom < NEAR_BOTTOM_THRESHOLD) {
+      followingRef.current = true;
       setHasNewMessages(false);
+    } else if (draggingRef.current || flingRef.current) {
+      followingRef.current = false;
+    }
+  };
+
+  // While following, any change in content or viewport size (new message,
+  // an emote finishing loading, keyboard, coming back from another tab)
+  // re-pins to the bottom; this is also what corrects a short landing.
+  const onListSizeChange = () => {
+    if (followingRef.current && !draggingRef.current) {
+      flingRef.current = false;
+      scrollToBottom(false);
     }
   };
 
@@ -431,12 +535,7 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
     const showSub = Keyboard.addListener(showEvent, e => {
       log.info(`${showEvent} height=${e.endCoordinates?.height}`);
       setKeyboardHeight(e.endCoordinates?.height ?? 0);
-      // Goes through the same scrollToEnd used by "More messages" (not a
-      // bare listRef call) so its scrollingToEndRef guard applies here too
-      // — without it, this animated scroll's own mid-flight onScroll events
-      // race isNearBottomRef exactly like the "More messages" bug did:
-      // sometimes flipping it back to false before the scroll finishes and
-      // popping the pill right back up instead of just landing at bottom.
+      // Opening the keyboard means you're about to type: jump to newest.
       scrollToEnd(true);
     });
     const hideSub = Keyboard.addListener(hideEvent, () => {
@@ -447,7 +546,7 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
       showSub.remove();
       hideSub.remove();
     };
-  }, []);
+  }, [scrollToEnd]);
 
   // After every catch-up (initial load + every reconnect): if the user is
   // near the bottom already, follow along as before — waiting a tick lets
@@ -458,13 +557,13 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
     if (catchUpCount === 0) {
       return;
     }
-    if (!isNearBottomRef.current) {
+    if (!followingRef.current) {
       setHasNewMessages(true);
       return;
     }
     const id = setTimeout(() => scrollToEnd(false), 0);
     return () => clearTimeout(id);
-  }, [catchUpCount]);
+  }, [catchUpCount, scrollToEnd]);
 
   const onSend = (override?: string) => {
     const text = override ?? draft.trim();
@@ -475,6 +574,8 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
     recordEmoteUsage(text, emotes).then(setEmoteUsageCounts);
     setDraft('');
     setSelection({ start: 0, end: 0 });
+    // Your own message should be visible, wherever you'd scrolled to.
+    scrollToEnd(false);
   };
 
   // Tapping an emote in the picker: an empty box means the user opened the
@@ -493,21 +594,37 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
     inputRef.current?.focus();
   };
 
-  // A reconnect while we already have history on screen is invisible to the
-  // user (messages just keep flowing once it resolves, usually within a
-  // couple seconds) — only worth a banner the very first time, before
-  // there's anything to look at yet. A disconnect that's failed to recover
-  // for a while is worth surfacing regardless of history.
-  const showConnecting = status === 'connecting' && messages.length === 0;
-  const showDisconnected = status === 'closed' && longDisconnected;
+  // Short blips (< 5s, see useChat's ConnectionPhase) stay silent once
+  // there's history on screen; a cold start with nothing to show yet gets
+  // "Connecting…" right away.
+  const disconnected = connection === 'disconnected';
+  const bannerText =
+    connection === 'reconnecting'
+      ? 'Reconnecting…'
+      : disconnected
+        ? 'Disconnected'
+        : connection === 'connecting' && messages.length === 0
+          ? 'Connecting…'
+          : null;
 
   return (
     <View style={styles.container}>
-      {(showConnecting || showDisconnected) && (
-        <View style={[styles.statusBar, showDisconnected && styles.statusBarError]}>
-          <Text style={[styles.statusText, showDisconnected && styles.statusTextError]}>
-            {showDisconnected ? 'Disconnected' : 'Connecting…'}
-          </Text>
+      {bannerText && (
+        <View style={[styles.statusBar, disconnected && styles.statusBarError]}>
+          <Text style={[styles.statusText, disconnected && styles.statusTextError]}>{bannerText}</Text>
+          {disconnected && (
+            <TouchableOpacity style={styles.retryButton} onPress={reconnect} hitSlop={8}>
+              <Text style={styles.retryText}>↻ Retry</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+      {!bannerText && historyStale && (
+        <View style={styles.statusBar}>
+          <Text style={styles.statusText}>History may be out of date</Text>
+          <TouchableOpacity style={styles.reloadButton} onPress={reloadHistory} hitSlop={8}>
+            <Text style={styles.reloadText}>↻ Reload</Text>
+          </TouchableOpacity>
         </View>
       )}
       <KeyboardWrapper keyboardHeight={keyboardHeight} navBarInset={insets.bottom}>
@@ -516,35 +633,35 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
           style={styles.list}
           data={displayItems}
           keyExtractor={item => item.key}
-          renderItem={({ item }) =>
-            item.type === 'combo' ? (
-              <ComboRow emoteName={item.emoteName} count={item.count} emotes={emotes} />
-            ) : (
-              <MessageRow
-                item={item.message}
-                emotes={emotes}
-                viewerStates={viewerStates}
-                continued={item.continued}
-                selfNick={me?.nick ?? null}
-                nickColors={nickColors}
-                onPressNick={onPressNick}
-                onLongPressNick={onLongPressNick}
-                focusedNick={focusedNick}
-              />
-            )
-          }
-          onContentSizeChange={() => {
-            if (isNearBottomRef.current) {
-              scrollToEnd(false);
+          renderItem={renderItem}
+          // Messages are capped at 200 (useChat.ts), so each new one drops
+          // the oldest from the top. Without this, rows you're reading
+          // slide upward while scrolled back.
+          maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+          onContentSizeChange={(_width, height) => {
+            contentHeightRef.current = height;
+            if (followingRef.current) {
+              onListSizeChange();
             } else {
               setHasNewMessages(true);
             }
           }}
-          onScroll={onListScroll}
-          onMomentumScrollEnd={() => {
-            scrollingToEndRef.current = false;
+          onLayout={e => {
+            viewportHeightRef.current = e.nativeEvent.layout.height;
+            onListSizeChange();
           }}
-          scrollEventThrottle={100}
+          onScroll={onListScroll}
+          onScrollBeginDrag={() => {
+            draggingRef.current = true;
+          }}
+          onScrollEndDrag={() => {
+            draggingRef.current = false;
+            flingRef.current = true;
+          }}
+          onMomentumScrollEnd={() => {
+            flingRef.current = false;
+          }}
+          scrollEventThrottle={16}
           contentContainerStyle={styles.listContent}
         />
         {hasNewMessages && (
@@ -617,7 +734,7 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
       <Modal visible={tooltipVisible} transparent animationType="fade">
         <View style={styles.tooltipOverlay} pointerEvents="none">
           <View style={styles.tooltip}>
-            <Text style={styles.tooltipText}>Long-press a name to change its color</Text>
+            <Text style={styles.tooltipText}>Long-press a name for options</Text>
           </View>
         </View>
       </Modal>
@@ -628,6 +745,34 @@ export default function ChatScreen({ jwt, emoteRefreshKey }: Props) {
           </View>
         </View>
       </Modal>
+      <NickMenu
+        nick={menuNick}
+        watching={menuNick ? viewerStates.get(menuNick.toLowerCase())?.channel ?? null : null}
+        nickColor={menuNick ? nickColors.get(menuNick.toLowerCase()) : undefined}
+        ignored={menuNick ? ignoredSet.has(menuNick.toLowerCase()) : false}
+        highlighted={menuNick ? focusedNick === menuNick.toLowerCase() : false}
+        onMention={() => {
+          menuNick && insertAtCursor(menuNick);
+          setMenuNick(null);
+        }}
+        onWhisper={() => {
+          menuNick && startWhisper(menuNick);
+          setMenuNick(null);
+        }}
+        onToggleIgnore={() => {
+          menuNick && toggleIgnore(menuNick);
+          setMenuNick(null);
+        }}
+        onToggleHighlight={() => {
+          menuNick && onPressNick(menuNick);
+          setMenuNick(null);
+        }}
+        onSetColor={() => {
+          setColorPickerNick(menuNick);
+          setMenuNick(null);
+        }}
+        onDismiss={() => setMenuNick(null)}
+      />
       <NickColorPicker nick={colorPickerNick} onPick={pickNickColor} onDismiss={() => setColorPickerNick(null)} />
       <EmotePicker
         visible={emotePickerVisible}
@@ -806,10 +951,34 @@ const styles = StyleSheet.create({
   emotePickerRowText: { color: '#e6e8f0', fontSize: 14 },
   keyboardArea: { flex: 1 },
   list: { flex: 1 },
-  statusBar: { backgroundColor: '#3a2f1f', paddingVertical: 4, alignItems: 'center' },
+  statusBar: {
+    backgroundColor: '#3a2f1f',
+    paddingVertical: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   statusText: { color: '#e0c080', fontSize: 12 },
   statusBarError: { backgroundColor: '#3a1414' },
   statusTextError: { color: '#ff6b6b' },
+  retryButton: {
+    marginLeft: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#ff6b6b',
+  },
+  retryText: { color: '#ff6b6b', fontSize: 12, fontWeight: '600' },
+  reloadButton: {
+    marginLeft: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#e0c080',
+  },
+  reloadText: { color: '#e0c080', fontSize: 12, fontWeight: '600' },
   listContent: { paddingHorizontal: 8, paddingVertical: 6 },
   messageRow: { paddingVertical: 2 },
   messageRowContinued: { paddingVertical: 0, marginTop: -1 },
@@ -832,6 +1001,8 @@ const styles = StyleSheet.create({
   // exactly the nick's own line since it lives inside the same inline text
   // flow, immune to whatever else is on the line.
   viewerBar: { fontWeight: '900' },
+  // Normal-weight, muted, and immune to greentext's color.
+  timestamp: { color: '#5c6273', fontSize: 12, fontWeight: 'normal' },
   greenText: { color: '#6ab04c' },
   link: { color: '#4c9fff', textDecorationLine: 'underline' },
   newMessagesPill: {

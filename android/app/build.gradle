@@ -110,6 +110,12 @@ android {
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+    // Animated WebP playback in <Image> (and inline <Text> images) — animated
+    // emotes are encoded to animated WebP (EmoteWebpModule) so Fresco plays
+    // them natively instead of JS stepping frames through React state.
+    // Must match the Fresco version react-android ships with.
+    implementation("com.facebook.fresco:animated-webp:3.7.0")
+    implementation("com.facebook.fresco:webpsupport:3.7.0")
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")

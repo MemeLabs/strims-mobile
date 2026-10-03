@@ -32,17 +32,21 @@ No iOS build yet — see [docs/releasing.md](docs/releasing.md) for why.
   credential handling — same login path as the website), storing the resulting `jwt` in the OS
   keychain.
 - Catches up on missed messages via REST (`/api/chat/history`, `/api/chat/me`,
-  `/api/chat/viewer-states`) on open/foreground/reconnect, then opens the chat websocket and
-  applies live `MSG` events on top, with the same reconnect/backoff behavior as chat-gui.
+  `/api/chat/viewer-states`) on open/foreground/reconnect, retrying history until it lands, then
+  opens the chat websocket and applies live `MSG` events on top, with the same reconnect/backoff
+  behavior as chat-gui. Connection status banner (Reconnecting… / Disconnected + Retry) and a
+  connected dot on the Chat tab.
 - Renders chat-gui's emote set faithfully, including CSS-spritesheet "animated" emotes (e.g.
-  NODDERS, catJAM) as real cropped-and-cycled frames, and a subset of chat-gui's emote modifiers
+  NODDERS, catJAM), played natively as animated WebP on Android, and a subset of chat-gui's emote modifiers
   (`:mirror`, `:flip`, `:smol`, `:wide`, `:spin`, `:fast`, `:slow`, `:reverse`, `:pause`) — see
   [docs/emotes.md](docs/emotes.md).
 - URL rewriting matches chat-gui's `UrlFormatter` (strims.gg/youtube/twitch/etc links shown in
   their short `service/id` form, tracking params stripped from Amazon/Twitter/Spotify links).
 - Per-viewer nick coloring by watched channel (same deterministic scheme as chat-gui's viewer-state
-  bar), plus a per-user custom color picker (long-press a nick) and a tap-to-focus mode that dims
-  every other message.
+  bar), a tap-to-focus mode that dims every other message, and a long-press nick menu: the stream
+  they're watching (tap to open), mention, whisper (`/w` is sent as a real whisper), highlight,
+  custom name color, and ignore (managed in Settings).
+- Optional message timestamps (Settings: off / `HH:MM` / `HH:MM:SS`).
 - Mention highlighting, greentext, message combos (repeated single-emote spam collapses into an
   "xN" row), "more messages" catch-up pill, and keyboard-safe layout on edge-to-edge Android.
 

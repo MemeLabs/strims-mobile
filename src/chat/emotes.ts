@@ -38,15 +38,12 @@ interface StoredIndex {
   emotes: [string, EmoteInfo][];
 }
 
-// No TTL — this cache is never invalidated automatically. Every automatic
-// re-check (even just "is this still fresh") means re-fetching and
-// re-parsing the whole emotes.<hash>.css bundle, and re-cropping every
-// animated emote touched since (see emoteFrames.ts, where that used to mean
-// re-downloading full spritesheets over the network). chat-gui's index only
-// changes on a deploy, which isn't often enough to justify that cost
-// automatically — refreshing is a deliberate action now (Settings → Refresh
-// emotes, see refreshEmoteIndex below), not something that happens on a
-// timer or on every cold start.
+// No automatic TTL. Every re-check (even just "is this still fresh") means
+// re-fetching and re-parsing the whole emotes.<hash>.css bundle, and
+// chat-gui's index only changes on a deploy. Refetching happens on Settings →
+// Refresh emotes (refreshEmoteIndex), or once automatically when an emote
+// asset 404s, which means a deploy invalidated the cached URLs (see
+// reportStaleEmoteIndex).
 async function readCache(): Promise<Map<string, EmoteInfo> | null> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
@@ -223,4 +220,30 @@ export async function refreshEmoteIndex(): Promise<Map<string, EmoteInfo>> {
   await AsyncStorage.removeItem(STORAGE_KEY);
   cache = null;
   return loadEmoteIndex();
+}
+
+const indexListeners = new Set<(emotes: Map<string, EmoteInfo>) => void>();
+let staleRefresh: Promise<void> | null = null;
+
+// Notified when the index is replaced by reportStaleEmoteIndex.
+export function subscribeToEmoteIndex(fn: (emotes: Map<string, EmoteInfo>) => void): () => void {
+  indexListeners.add(fn);
+  return () => {
+    indexListeners.delete(fn);
+  };
+}
+
+// An emote asset 404'd: chat-gui redeployed (new content hashes) since the
+// cached index was fetched, so every URL in it may be dead. This is the one
+// automatic refetch, at most once per app run.
+export function reportStaleEmoteIndex(): void {
+  if (staleRefresh) {
+    return;
+  }
+  log.info('emote asset 404, refetching stale emote index');
+  staleRefresh = refreshEmoteIndex().then(emotes => {
+    if (emotes.size > 0) {
+      indexListeners.forEach(fn => fn(emotes));
+    }
+  });
 }

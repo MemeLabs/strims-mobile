@@ -16,12 +16,14 @@ const TABS: Tab[] = [
 interface Props {
   active: TabKey;
   onChange: (key: TabKey) => void;
+  // Chat socket is open: a small dot next to "Chat".
+  chatConnected: boolean;
 }
 
 // Styled to match the strims-live-extension settings panel's tab strip
 // (style/app.css .tab-strip / .tab-btn): flat buttons, no background, an
 // accent-colored underline on the active tab.
-export default function TabBar({ active, onChange }: Props) {
+export default function TabBar({ active, onChange, chatConnected }: Props) {
   return (
     <View style={styles.strip}>
       {TABS.map(tab => {
@@ -32,7 +34,10 @@ export default function TabBar({ active, onChange }: Props) {
             style={[styles.tab, isActive && styles.tabActive]}
             onPress={() => onChange(tab.key)}
           >
-            <Text style={[styles.label, isActive && styles.labelActive]}>{tab.label}</Text>
+            <View style={styles.labelRow}>
+              <Text style={[styles.label, isActive && styles.labelActive]}>{tab.label}</Text>
+              {tab.key === 'chat' && chatConnected && <View style={styles.connectedDot} />}
+            </View>
           </TouchableOpacity>
         );
       })}
@@ -41,6 +46,8 @@ export default function TabBar({ active, onChange }: Props) {
 }
 
 const ACCENT = '#e45e07';
+// Same muted green as chat greentext (ChatScreen.tsx greenText).
+const CONNECTED = '#6ab04c';
 
 const styles = StyleSheet.create({
   strip: {
@@ -66,5 +73,13 @@ const styles = StyleSheet.create({
   },
   labelActive: {
     color: ACCENT,
+  },
+  labelRow: { flexDirection: 'row', alignItems: 'center' },
+  connectedDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginLeft: 6,
+    backgroundColor: CONNECTED,
   },
 });

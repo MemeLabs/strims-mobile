@@ -12,7 +12,12 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import GoogleCast, { CastButton, useRemoteMediaClient } from 'react-native-google-cast';
+import GoogleCast, {
+  CastButton,
+  MediaHlsVideoSegmentFormat,
+  MediaStreamType,
+  useRemoteMediaClient,
+} from 'react-native-google-cast';
 import { viewerChannelColor } from '../chat/viewerColor';
 import { fetchAngelThumpStartTimes, fetchStreamList } from '../streams/api';
 import { ANGELTHUMP_REGIONS, resolveAngelThumpHls } from '../streams/hlsResolver';
@@ -223,13 +228,13 @@ export default function StreamsScreen() {
       mediaInfo: {
         contentUrl: hlsUrl,
         contentType: 'application/x-mpegURL',
-        streamType: 'live',
+        streamType: MediaStreamType.LIVE,
         // AngelThump serves fMP4/CMAF segments (.m4s + an EXT-X-MAP init
         // segment), not classic MPEG2-TS. The Default Media Receiver needs
         // this hint to decode fMP4 HLS — without it, loadMedia is
         // acknowledged but the receiver silently never actually plays
         // anything (no error surfaced back to the sender at all).
-        hlsVideoSegmentFormat: 'FMP4',
+        hlsVideoSegmentFormat: MediaHlsVideoSegmentFormat.FMP4,
         metadata: { type: 'generic', title: stream.title, images: [{ url: stream.thumbnail }] },
       },
     });
@@ -276,7 +281,6 @@ export default function StreamsScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [follows]);
 
   const startPolling = useCallback(() => {
