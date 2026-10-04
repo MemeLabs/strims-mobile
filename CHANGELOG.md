@@ -7,6 +7,14 @@ the release process itself.
 
 ## [Unreleased]
 
+### Added
+- Server button on the AngelThump player (shows the current one, e.g. `AMS`): pick Auto or a
+  region and the stream reloads from it. Same setting as Settings → AngelThump server.
+
+### Fixed
+- The player's cast and close buttons now hide and reappear with the player's own controls
+  instead of staying over the video.
+
 ## [0.4.0] - 2026-10-03
 
 ### Added

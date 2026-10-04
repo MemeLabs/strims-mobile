@@ -63,6 +63,13 @@ export const ANGELTHUMP_REGIONS: { code: string; label: string }[] = [
   { code: 'sgp1', label: 'SGP' },
 ];
 
+// What a user can pick for in-app playback: AngelThump's own routing, or a
+// fixed region.
+export const ANGELTHUMP_SERVER_CHOICES: { code: string | null; label: string }[] = [
+  { code: null, label: 'Auto' },
+  ...ANGELTHUMP_REGIONS,
+];
+
 // Any angelthump.com host: the master manifest now points at
 // video-cdn.angelthump.com, which redirects nowhere but serves a playlist
 // whose segment URLs are absolute and pinned to its own pick of region

@@ -3,11 +3,12 @@ import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'rea
 import Video from 'react-native-video';
 import WebView from 'react-native-webview';
 import ChromecastIcon from './ChromecastIcon';
+import RegionPicker from './RegionPicker';
 import { useCast } from '../streams/cast';
 import { followKey } from '../streams/follows';
-import { resolveAngelThumpHls } from '../streams/hlsResolver';
+import { ANGELTHUMP_SERVER_CHOICES, resolveAngelThumpHls } from '../streams/hlsResolver';
 import type { Stream } from '../streams/types';
-import { usePreference } from '../storage/preferences';
+import { setPreference, usePreference } from '../storage/preferences';
 import { makeLogger } from '../log';
 
 const log = makeLogger('stream-player');
@@ -29,14 +30,50 @@ interface Props {
   onClose: () => void;
 }
 
+// How long the overlay buttons stay up after a touch on the Twitch embed,
+// matching how long Twitch's own controls linger.
+const TWITCH_BUTTONS_MS = 3000;
+
 export default function StreamPlayer({ stream, onClose }: Props) {
   const { castingKey, activeCastKey, toggleCast } = useCast();
   const key = followKey(stream.service, stream.channel);
   // Casting works for AngelThump only (see streams/hlsResolver.ts).
   const canCast = stream.service === 'angelthump';
   const castingHere = activeCastKey === key;
+  // Same setting as Settings → AngelThump server; the player reloads on it.
+  const region = usePreference('angelThumpRegion');
+  const [serverPickerOpen, setServerPickerOpen] = useState(false);
+  const serverLabel = ANGELTHUMP_SERVER_CHOICES.find(choice => choice.code === region)?.label ?? 'Auto';
+  // Our buttons come and go with the player's own controls. ExoPlayer
+  // reports its controls' visibility; the Twitch embed can't, so there they
+  // show on any touch and fade after TWITCH_BUTTONS_MS like Twitch's do.
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showTwitchButtons = useCallback(() => {
+    setControlsVisible(true);
+    if (hideTimer.current !== null) {
+      clearTimeout(hideTimer.current);
+    }
+    hideTimer.current = setTimeout(() => setControlsVisible(false), TWITCH_BUTTONS_MS);
+  }, []);
+  useEffect(() => {
+    if (stream.service === 'twitch') {
+      showTwitchButtons();
+    }
+    return () => {
+      if (hideTimer.current !== null) {
+        clearTimeout(hideTimer.current);
+      }
+    };
+  }, [stream.service, showTwitchButtons]);
+  // Always up while casting: there's no player to tap to bring them back.
+  const showButtons = controlsVisible || castingHere;
   return (
-    <View style={styles.container}>
+    <View
+      style={styles.container}
+      // Fires for touches landing on the WebView too, without claiming them.
+      onTouchStart={stream.service === 'twitch' ? showTwitchButtons : undefined}
+    >
       {castingHere ? (
         // Unmounting the local player stops it, so it isn't playing (and
         // downloading) a second copy behind the TV.
@@ -45,11 +82,24 @@ export default function StreamPlayer({ stream, onClose }: Props) {
           <Text style={styles.message}>Playing on Chromecast</Text>
         </View>
       ) : stream.service === 'angelthump' ? (
-        <AngelThumpPlayer channel={stream.channel} />
+        <AngelThumpPlayer channel={stream.channel} onControlsVisibilityChange={setControlsVisible} />
       ) : (
         <TwitchPlayer channel={stream.channel} />
       )}
-      <View style={styles.topButtons}>
+      <View
+        style={[styles.topButtons, !showButtons && styles.hidden]}
+        pointerEvents={showButtons ? 'box-none' : 'none'}
+      >
+        {canCast && !castingHere && (
+          <TouchableOpacity
+            style={[styles.roundButton, styles.serverButton]}
+            onPress={() => setServerPickerOpen(true)}
+            hitSlop={8}
+            accessibilityLabel={`AngelThump server: ${serverLabel}`}
+          >
+            <Text style={styles.serverText}>{serverLabel}</Text>
+          </TouchableOpacity>
+        )}
         {canCast && (
           <TouchableOpacity
             style={styles.roundButton}
@@ -69,6 +119,17 @@ export default function StreamPlayer({ stream, onClose }: Props) {
           <Text style={styles.closeText}>✕</Text>
         </TouchableOpacity>
       </View>
+      <RegionPicker
+        visible={serverPickerOpen}
+        title="Play from"
+        options={ANGELTHUMP_SERVER_CHOICES}
+        selected={region}
+        onPick={code => {
+          setServerPickerOpen(false);
+          setPreference('angelThumpRegion', code);
+        }}
+        onDismiss={() => setServerPickerOpen(false)}
+      />
     </View>
   );
 }
@@ -76,7 +137,14 @@ export default function StreamPlayer({ stream, onClose }: Props) {
 // Native HLS playback (ExoPlayer / AVPlayer) of the manifest the cast flow
 // already resolves. The token in that URL is short-lived, so a playback
 // error re-resolves once before giving up; Retry starts over.
-function AngelThumpPlayer({ channel }: { channel: string }) {
+function AngelThumpPlayer({
+  channel,
+  onControlsVisibilityChange,
+}: {
+  channel: string;
+  // Visibility of ExoPlayer's controls; true while there's no player yet.
+  onControlsVisibilityChange: (visible: boolean) => void;
+}) {
   const region = usePreference('angelThumpRegion');
   const delaySeconds = usePreference('streamDelaySeconds');
   const [uri, setUri] = useState<string | null>(null);
@@ -121,6 +189,15 @@ function AngelThumpPlayer({ channel }: { channel: string }) {
     resolve();
   }, [resolve]);
 
+  // Loading and error screens have no player controls to follow, and their
+  // close/cast buttons must stay reachable.
+  const playerShown = !failed && source !== null;
+  useEffect(() => {
+    if (!playerShown) {
+      onControlsVisibilityChange(true);
+    }
+  }, [playerShown, onControlsVisibilityChange]);
+
   if (failed) {
     return (
       <View style={styles.centered}>
@@ -152,6 +229,7 @@ function AngelThumpPlayer({ channel }: { channel: string }) {
       resizeMode="contain"
       controls
       controlsStyles={LIVE_CONTROLS}
+      onControlsVisibilityChange={e => onControlsVisibilityChange(e.isVisible)}
       onError={e => {
         log.warn(`playback error for ${channel}: ${e.error.errorString}`);
         if (e.error.errorCode === BEHIND_LIVE_WINDOW) {
@@ -197,6 +275,7 @@ const styles = StyleSheet.create({
   retryButton: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6, backgroundColor: '#262833' },
   retryText: { color: '#e6e8f0', fontSize: 13, fontWeight: '600' },
   topButtons: { position: 'absolute', top: 8, right: 8, flexDirection: 'row', gap: 8 },
+  hidden: { opacity: 0 },
   roundButton: {
     width: 32,
     height: 32,
@@ -206,4 +285,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   closeText: { color: '#fff', fontSize: 16 },
+  // Pill instead of a circle: fits "Auto" / "AMS".
+  serverButton: { width: undefined, paddingHorizontal: 10 },
+  serverText: { color: '#fff', fontSize: 12, fontWeight: '600' },
 });

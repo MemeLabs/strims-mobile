@@ -14,7 +14,7 @@ import {
   type TimestampFormat,
 } from '../storage/preferences';
 import pkg from '../../package.json';
-import { ANGELTHUMP_REGIONS } from '../streams/hlsResolver';
+import { ANGELTHUMP_SERVER_CHOICES } from '../streams/hlsResolver';
 
 interface Props {
   onClose: () => void;
@@ -36,11 +36,6 @@ const TIMESTAMP_OPTIONS: { value: TimestampFormat; label: string }[] = [
 ];
 
 const STREAM_DELAY_OPTIONS = [4, 6, 8, 10];
-
-const REGION_OPTIONS: { value: string | null; label: string }[] = [
-  { value: null, label: 'Auto' },
-  ...ANGELTHUMP_REGIONS.map(region => ({ value: region.code, label: region.label })),
-];
 
 export default function SettingsScreen({
   onClose,
@@ -160,13 +155,13 @@ export default function SettingsScreen({
         <View style={[styles.emotesRow, styles.ignoredRow]}>
           <Text style={styles.emotesLabel}>AngelThump server</Text>
           <View style={[styles.segmented, styles.segmentedBelow]}>
-            {REGION_OPTIONS.map(option => {
-              const selected = option.value === angelThumpRegion;
+            {ANGELTHUMP_SERVER_CHOICES.map(option => {
+              const selected = option.code === angelThumpRegion;
               return (
                 <TouchableOpacity
                   key={option.label}
                   style={[styles.segment, selected && styles.segmentSelected]}
-                  onPress={() => setPreference('angelThumpRegion', option.value)}
+                  onPress={() => setPreference('angelThumpRegion', option.code)}
                 >
                   <Text style={[styles.segmentText, selected && styles.segmentTextSelected]}>{option.label}</Text>
                 </TouchableOpacity>

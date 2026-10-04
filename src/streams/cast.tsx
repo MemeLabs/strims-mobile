@@ -1,11 +1,12 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { StyleSheet } from 'react-native';
 import GoogleCast, {
   CastButton,
   MediaHlsVideoSegmentFormat,
   MediaStreamType,
   useRemoteMediaClient,
 } from 'react-native-google-cast';
+import RegionPicker from '../components/RegionPicker';
 import { followKey } from './follows';
 import { ANGELTHUMP_REGIONS, resolveAngelThumpHls } from './hlsResolver';
 import { makeLogger } from '../log';
@@ -141,71 +142,17 @@ export function CastProvider({ children }: { children: React.ReactNode }) {
           somewhere for showCastDialog() to work — this one is invisible;
           our own cast icons drive the actual UI. */}
       <CastButton style={styles.hiddenCastButton} />
-      <Modal
+      <RegionPicker
         visible={regionPickerStream !== null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setRegionPickerStream(null)}
-      >
-        <TouchableOpacity
-          style={styles.regionPickerBackdrop}
-          activeOpacity={1}
-          onPress={() => setRegionPickerStream(null)}
-        >
-          <View style={styles.regionPickerCard}>
-            <Text style={styles.regionPickerTitle}>Cast from</Text>
-            {ANGELTHUMP_REGIONS.map(region => (
-              <TouchableOpacity
-                key={region.code}
-                style={styles.regionOption}
-                onPress={() => regionPickerStream && onConfirmRegion(regionPickerStream, region.code)}
-              >
-                <Text style={styles.regionOptionText}>{region.label}</Text>
-              </TouchableOpacity>
-            ))}
-            <TouchableOpacity style={styles.regionCancel} onPress={() => setRegionPickerStream(null)}>
-              <Text style={styles.regionCancelText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
-      </Modal>
+        title="Cast from"
+        options={ANGELTHUMP_REGIONS}
+        onPick={code => regionPickerStream && code && onConfirmRegion(regionPickerStream, code)}
+        onDismiss={() => setRegionPickerStream(null)}
+      />
     </CastContext.Provider>
   );
 }
 
 const styles = StyleSheet.create({
   hiddenCastButton: { width: 0, height: 0 },
-  regionPickerBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  regionPickerCard: {
-    backgroundColor: '#1c1d24',
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 8,
-    width: 220,
-  },
-  regionPickerTitle: {
-    color: '#8291b2',
-    fontSize: 13,
-    fontWeight: '600',
-    textAlign: 'center',
-    paddingVertical: 8,
-  },
-  regionOption: {
-    paddingVertical: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#2a2b33',
-  },
-  regionOptionText: { color: '#fff', fontSize: 16, textAlign: 'center' },
-  regionCancel: {
-    paddingVertical: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#2a2b33',
-    marginTop: 4,
-  },
-  regionCancelText: { color: '#e45e07', fontSize: 15, fontWeight: '600', textAlign: 'center' },
 });
