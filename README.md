@@ -3,27 +3,55 @@
 A React Native companion app for the [strims.gg](https://strims.gg) / [chat.strims.gg](https://chat.strims.gg)
 community, built to match the behavior of the existing web ecosystem
 ([chat-gui](https://github.com/strims/chat-gui), [strims-live-extension](https://github.com/strims/strims-live-extension),
-[Rustla2](https://github.com/strims/Rustla2)) rather than reinvent it. Android-first, developed
-against a physical device; iOS is expected to work but hasn't been build-verified yet (see
+[Rustla2](https://github.com/strims/Rustla2)) rather than reinvent it: chat, the live stream list,
+and AngelThump/Twitch streams playing above chat. Android-first, developed against a physical
+device; iOS builds in CI on every release but hasn't been tried on an iPhone yet (see
 [docs/gotchas.md](docs/gotchas.md)). Not published to the App Store or Play Store.
-
-## Install (Android)
-
-Grab `app-release.apk` from the [latest release](https://github.com/MemeLabs/strims-mobile/releases/latest).
-
-- Open the release page on your phone and tap `app-release.apk` to download it.
-- Android will prompt you to allow installs from that source (Chrome/Files) — allow it once.
-- Open the downloaded APK and tap Install.
-- You'll get an "unknown developer" warning — expected, it's debug-signed rather than Play
-  Store-signed; tap through it.
-
-No iOS build yet — see [docs/releasing.md](docs/releasing.md) for why.
 
 ## Screenshots
 
-| Chat | Streams |
-| --- | --- |
-| ![Chat tab](docs/screenshots/chat.png) | ![Streams tab](docs/screenshots/streams.png) |
+| Chat | Streams | Watching | Settings |
+| --- | --- | --- | --- |
+| ![Chat tab](docs/screenshots/chat.png) | ![Streams tab](docs/screenshots/streams.png) | ![Stream playing above chat](docs/screenshots/player.png) | ![Settings](docs/screenshots/settings.png) |
+
+Turn the phone sideways while a stream is playing for fullscreen:
+
+![Fullscreen stream in landscape](docs/screenshots/fullscreen.png)
+
+## Install
+
+Every [release](https://github.com/MemeLabs/strims-mobile/releases/latest) has an Android APK
+(`app-release.apk`) and an unsigned iOS build (`StrimsMobile-unsigned.ipa`).
+
+### Android
+
+1. On your phone, open the [latest release](https://github.com/MemeLabs/strims-mobile/releases/latest)
+   and tap `app-release.apk` to download it.
+2. Open the download and tap **Install**. Android asks once to allow installs from your browser
+   or Files app; allow it.
+3. Tap through the "unknown developer" warning: the APK is debug-signed, not Play Store-signed.
+
+Updates: the app checks for a new release once a day and offers to install it. Installing a new
+APK over the old one keeps your login and settings.
+
+### iOS (sideload)
+
+The `.ipa` isn't signed, so iOS won't install it as-is. A sideloading tool re-signs it with your
+own Apple ID while installing:
+
+| Tool | Runs on | Notes |
+| --- | --- | --- |
+| [AltStore](https://altstore.io) | macOS / Windows (with AltServer) | Re-signs automatically every few days over Wi-Fi |
+| [Sideloadly](https://sideloadly.io) | macOS / Windows | One-shot install; re-run it before the signature expires |
+
+With AltStore:
+1. Install AltServer on your Mac or PC, and AltStore on your iPhone from it.
+2. Download `StrimsMobile-unsigned.ipa` from the latest release onto the iPhone.
+3. In AltStore, tap **+**, pick the `.ipa`, and sign in with your Apple ID when asked.
+
+Limits Apple puts on this: with a free Apple ID the app stops opening after 7 days unless
+re-signed (AltStore does it for you while AltServer is reachable), and at most 3 sideloaded apps
+can be installed at once. A paid Apple Developer account extends the 7 days to a year.
 
 ## What it does
 
@@ -63,13 +91,10 @@ No iOS build yet — see [docs/releasing.md](docs/releasing.md) for why.
 - Chromecast support for AngelThump streams (resolves past AngelThump's CORS-blocked master
   manifest to a castable edge URL; see [docs/architecture.md](docs/architecture.md)).
 
-**Settings** — reachable via the gear icon in the title bar: log out, app version.
+**Settings** — the gear in the title bar: refresh emotes, animate emotes forever, timestamps,
+stream delay and AngelThump server for the player, ignored users, log out.
 
-## Installation
-
-There's no packaged release yet — this section covers running the app from source. A signed
-Android APK / iOS build for manual install (GitHub Releases) will follow once the project has a
-proper code repository set up.
+## Building from source
 
 ### Prerequisites (both platforms)
 

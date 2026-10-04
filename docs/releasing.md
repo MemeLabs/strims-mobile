@@ -80,30 +80,12 @@ batched up right before a release — do it in the same PR/commit as the change,
 
 ## Installing the iOS artifact
 
-`StrimsMobile-unsigned.ipa` on each release is a **device-arch, Release-configuration build
-with code signing disabled**.  It cannot be installed directly from Finder or iTunes — it
-must be re-signed by a sideloading tool that uses your own Apple ID as the certificate:
-
-| Tool | Platform | Notes |
-| --- | --- | --- |
-| [AltStore](https://altstore.io) | macOS / Windows (AltServer companion app) | Installs and auto-refreshes over Wi-Fi |
-| [Sideloadly](https://sideloadly.io) | macOS / Windows | Simpler one-shot install; no auto-refresh |
-
-**Steps (AltStore example):**
-1. Install AltServer on your Mac or PC.
-2. Connect your iPhone/iPad via USB (or Wi-Fi once paired).
-3. In AltStore on your device, tap **+** and choose the downloaded `.ipa`.
-4. Sign in with your Apple ID when prompted — AltServer re-signs and installs the app.
-
-**Limitations of the unsigned/free-Apple-ID approach:**
-- **7-day expiry**: Apple's free personal development certificates expire after 7 days.
-  AltStore can refresh automatically in the background over Wi-Fi while AltServer is running.
-  A paid Apple Developer Program membership ($99/year) extends the certificate to 365 days.
-- **3-app limit**: A free Apple ID can have at most 3 sideloaded apps active at a time.
-- **Not App Store distributable**: the `.ipa` is not signed with a distribution certificate
-  and cannot be submitted to TestFlight or the App Store.
-
-These constraints are imposed by Apple, not by this project.
+`StrimsMobile-unsigned.ipa` on each release is a device-arch, Release-configuration build with
+code signing disabled, so it can only be installed by a sideloading tool that re-signs it with
+the user's own Apple ID. User-facing steps (AltStore / Sideloadly) and Apple's limits (7-day
+expiry on free Apple IDs, 3-app cap) are in the README's
+[iOS (sideload)](../README.md#ios-sideload) section. The `.ipa` also can't go to TestFlight or
+the App Store, since it carries no distribution signature.
 
 ## Future automation
 
