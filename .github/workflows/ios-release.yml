@@ -1,0 +1,98 @@
+name: iOS release build
+
+# Builds an unsigned, device-arch Release .ipa whenever a GitHub Release is
+# published and uploads it to that release.  No Apple credentials are stored
+# in CI — code signing is intentionally disabled; users install the artifact
+# via AltStore (https://altstore.io) or Sideloadly (https://sideloadly.io),
+# which re-sign the .ipa with the user's own Apple ID at install time.
+#
+# Limitation: free Apple IDs produce a 7-day certificate that expires and
+# must be refreshed.  A paid Apple Developer Program membership ($99/year)
+# extends this to 365 days.  AltStore can refresh automatically over Wi-Fi.
+#
+# The existing ios-build.yml (per-push simulator build) is unchanged.
+
+on:
+  release:
+    types: [published]
+  # For releases published before this workflow existed (or a failed run):
+  # Actions → iOS release build → Run workflow, with the release's tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and attach (e.g. v0.3.1)
+        required: true
+
+permissions:
+  contents: write   # required to upload release assets
+
+jobs:
+  build-unsigned-ipa:
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Build the tagged release's code, not whatever main is now.
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          # Keep in sync with ios-build.yml.
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - name: Install CocoaPods dependencies
+        working-directory: ios
+        run: bundle exec pod install
+
+      # Archive for a physical iOS device in Release configuration.
+      # CODE_SIGNING_ALLOWED=NO / CODE_SIGNING_REQUIRED=NO / CODE_SIGN_IDENTITY=""
+      # are Apple-documented build settings that disable signing entirely.
+      # SKIP_INSTALL=NO ensures the archived .app is placed under
+      # Products/Applications/ inside the .xcarchive (required for IPA packaging).
+      - name: Archive for iOS device (Release, unsigned)
+        working-directory: ios
+        run: |
+          xcodebuild archive \
+            -workspace StrimsMobile.xcworkspace \
+            -scheme StrimsMobile \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/StrimsMobile.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            SKIP_INSTALL=NO
+
+      # An .ipa is a ZIP containing a Payload/ directory with the .app inside.
+      # This is the canonical format accepted by AltStore, Sideloadly, and the
+      # device installer — no export plist or signing step needed for unsigned
+      # distribution.
+      - name: Package unsigned .ipa
+        run: |
+          cd "$RUNNER_TEMP"
+          mkdir -p Payload
+          cp -r StrimsMobile.xcarchive/Products/Applications/StrimsMobile.app \
+                Payload/
+          zip -qr StrimsMobile-unsigned.ipa Payload/
+
+      - name: Upload .ipa to GitHub Release
+        run: |
+          gh release upload "${{ github.event.release.tag_name || inputs.tag }}" \
+            "$RUNNER_TEMP/StrimsMobile-unsigned.ipa" \
+            --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

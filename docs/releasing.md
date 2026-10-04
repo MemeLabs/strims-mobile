@@ -51,13 +51,15 @@ batched up right before a release — do it in the same PR/commit as the change,
    real release keystore later will break update compatibility with anything installed under
    the debug signature, so that switch should happen deliberately, not as a side effect of an
    unrelated release.
-6. **iOS**: [.github/workflows/ios-build.yml](../.github/workflows/ios-build.yml) verifies the
-   app *builds* on every push (simulator target, unsigned) — that is not the same as producing
-   a distributable `.ipa`. A real device/sideload build needs code signing, which needs a Mac
-   (see the README's iOS sideload section and [gotchas.md](gotchas.md)'s "iOS is unverified"
-   note) — until that's set up, iOS releases either skip the artifact (Android-only release) or
-   get built manually on a Mac and attached by hand.
-7. **Create the GitHub Release**:
+6. **iOS**: `StrimsMobile-unsigned.ipa` is built and attached to the GitHub Release
+   **automatically** by [.github/workflows/ios-release.yml](../.github/workflows/ios-release.yml)
+   once the release is published (step 7 below triggers the workflow).  No Apple credentials
+   are required on the CI side — code signing is disabled; the resulting `.ipa` is unsigned.
+   See [Installing the iOS artifact](#installing-the-ios-artifact) below for how users
+   install it.  The separate [ios-build.yml](../.github/workflows/ios-build.yml) per-push
+   simulator build is unchanged. For a release published before the workflow existed, or a
+   failed run: `gh workflow run ios-release.yml -f tag=vX.Y.Z` builds that tag and attaches it.
+7. **Create the GitHub Release** (this triggers the iOS workflow in step 6):
    ```sh
    gh release create vX.Y.Z \
      android/app/build/outputs/apk/release/app-release.apk \
@@ -66,13 +68,41 @@ batched up right before a release — do it in the same PR/commit as the change,
    ```
    (that `sed` pulls just this version's section out of `CHANGELOG.md` for the release notes
    body — adjust `X.Y.Z` to match; simplest to just copy that section by hand into
-   `--notes` if the one-liner is fiddly.) Attach the `.ipa` too with a second path argument if
-   one was built for this release.
+   `--notes` if the one-liner is fiddly.)  The `.ipa` is uploaded automatically by CI; do
+   **not** attach it by hand unless the workflow failed.
+
+## Installing the iOS artifact
+
+`StrimsMobile-unsigned.ipa` on each release is a **device-arch, Release-configuration build
+with code signing disabled**.  It cannot be installed directly from Finder or iTunes — it
+must be re-signed by a sideloading tool that uses your own Apple ID as the certificate:
+
+| Tool | Platform | Notes |
+| --- | --- | --- |
+| [AltStore](https://altstore.io) | macOS / Windows (AltServer companion app) | Installs and auto-refreshes over Wi-Fi |
+| [Sideloadly](https://sideloadly.io) | macOS / Windows | Simpler one-shot install; no auto-refresh |
+
+**Steps (AltStore example):**
+1. Install AltServer on your Mac or PC.
+2. Connect your iPhone/iPad via USB (or Wi-Fi once paired).
+3. In AltStore on your device, tap **+** and choose the downloaded `.ipa`.
+4. Sign in with your Apple ID when prompted — AltServer re-signs and installs the app.
+
+**Limitations of the unsigned/free-Apple-ID approach:**
+- **7-day expiry**: Apple's free personal development certificates expire after 7 days.
+  AltStore can refresh automatically in the background over Wi-Fi while AltServer is running.
+  A paid Apple Developer Program membership ($99/year) extends the certificate to 365 days.
+- **3-app limit**: A free Apple ID can have at most 3 sideloaded apps active at a time.
+- **Not App Store distributable**: the `.ipa` is not signed with a distribution certificate
+  and cannot be submitted to TestFlight or the App Store.
+
+These constraints are imposed by Apple, not by this project.
 
 ## Future automation
 
 Worth doing once this has happened manually a couple of times and the process is settled:
 a tag-triggered GitHub Actions workflow that builds the Android APK and drafts the GitHub
-Release automatically (mirroring [.github/workflows/ios-build.yml](../.github/workflows/ios-build.yml)'s
-pattern) — not set up yet since automating a process before it's been done manually at least
-once tends to bake in the wrong assumptions.
+Release automatically — not set up yet since automating a process before it's been done
+manually at least once tends to bake in the wrong assumptions.  (The iOS unsigned `.ipa`
+is already automated via [ios-release.yml](../.github/workflows/ios-release.yml); Android
+is the remaining manual step.)
