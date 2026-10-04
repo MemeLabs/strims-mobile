@@ -7,6 +7,8 @@ the release process itself.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-03
+
 ### Added
 - Watch AngelThump and Twitch streams in the app: tap a stream to play it above chat, turn the
   phone sideways for fullscreen, ✕ or back to close. Long-press a stream (or any other service)
