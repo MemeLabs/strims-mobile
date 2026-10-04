@@ -44,8 +44,14 @@ batched up right before a release — do it in the same PR/commit as the change,
    ```
 5. **Build the Android release APK**:
    ```sh
-   cd android && ./gradlew assembleRelease
+   cd android && ./gradlew clean assembleRelease
    ```
+   `clean` matters: Gradle doesn't count a `package.json`-only change as a reason to rebuild
+   the JS bundle, so after a version bump an incremental build ships the *previous* version
+   string, and the in-app update check then keeps offering the release you just installed
+   (v0.3.1 shipped like that). Check with
+   `unzip -p android/app/build/outputs/apk/release/app-release.apk assets/index.android.bundle | grep -acF X.Y.Z`
+   (should print 1).
    Output: `android/app/build/outputs/apk/release/app-release.apk`. Debug-signed by default
    (see the README's Android install section) — fine for now, but note that switching to a
    real release keystore later will break update compatibility with anything installed under
