@@ -7,6 +7,8 @@ the release process itself.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-03
+
 ### Fixed
 - Chat no longer jumps up and down while typing. The keyboard, input row and messages now
   move together frame by frame (`react-native-keyboard-controller`), and the "More messages"
