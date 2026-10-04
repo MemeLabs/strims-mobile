@@ -13,12 +13,21 @@ export interface Preferences {
   timestampFormat: TimestampFormat;
   // Lowercased nicks whose messages are hidden (nick menu → Ignore).
   ignoredNicks: string[];
+  // How far behind live (seconds) the in-app AngelThump player stays. Its
+  // playlists only reach back 12s and the newest segment often isn't on the
+  // edge server yet, so this has to sit in between.
+  streamDelaySeconds: number;
+  // AngelThump edge server for in-app playback (ANGELTHUMP_REGIONS code);
+  // null lets AngelThump route as it normally does.
+  angelThumpRegion: string | null;
 }
 
 const DEFAULTS: Preferences = {
   animateEmotesForever: false,
   timestampFormat: 'hm',
   ignoredNicks: [],
+  streamDelaySeconds: 8,
+  angelThumpRegion: null,
 };
 
 const STORAGE_KEY = 'gg.strims.mobile.preferences';

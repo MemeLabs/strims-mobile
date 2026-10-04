@@ -5,25 +5,20 @@ import {
   FlatList,
   Image,
   Linking,
-  Modal,
   RefreshControl,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
-import GoogleCast, {
-  CastButton,
-  MediaHlsVideoSegmentFormat,
-  MediaStreamType,
-  useRemoteMediaClient,
-} from 'react-native-google-cast';
 import { viewerChannelColor } from '../chat/viewerColor';
 import { fetchAngelThumpStartTimes, fetchStreamList } from '../streams/api';
-import { ANGELTHUMP_REGIONS, resolveAngelThumpHls } from '../streams/hlsResolver';
+import { useCast } from '../streams/cast';
 import { followKey, loadFollows, toggleFollow } from '../streams/follows';
 import { ensureNotificationPermission } from '../streams/notifications';
 import { checkForNewlyLiveFollows } from '../streams/liveTracking';
+import { canPlayInApp } from '../components/StreamPlayer';
+import ChromecastIcon from '../components/ChromecastIcon';
 import { DEFAULT_CONFIG } from '../config/env';
 import { makeLogger } from '../log';
 import type { Stream } from '../streams/types';
@@ -73,36 +68,12 @@ function formatUptime(startTime: number): string {
   return `${minutes}m`;
 }
 
-// The classic Chromecast glyph — a screen outline with wifi-style signal
-// arcs in the bottom-left corner — built from plain Views rather than an
-// icon font/SVG library, since CastButton's native tap handling can't be
-// intercepted for our per-card resolve-then-load flow (see onCast above),
-// so we can't reuse its built-in icon.
-// `active` (currently casting) fills the screen solid instead of just
-// outlining it — same convention the real Cast icon uses to distinguish
-// "connected/casting" from "idle".
-function ChromecastIcon({ color, active }: { color: string; active?: boolean }) {
-  return (
-    <View style={styles.castIconBox}>
-      <View
-        style={[styles.castIconScreen, { borderColor: color }, active && { backgroundColor: color }]}
-      />
-      <View
-        style={[styles.castIconArc, styles.castIconArcOuter, { borderBottomColor: color, borderLeftColor: color }]}
-      />
-      <View
-        style={[styles.castIconArc, styles.castIconArcInner, { borderBottomColor: color, borderLeftColor: color }]}
-      />
-      <View style={[styles.castIconDot, { backgroundColor: color }]} />
-    </View>
-  );
-}
-
 interface StreamCardProps {
   stream: Stream;
   following: boolean;
   onToggleFollow: (stream: Stream) => void;
   onCast: (stream: Stream) => void;
+  onPlay: (stream: Stream) => void;
   casting: boolean;
   castActive: boolean;
   // AngelThump-only (see fetchAngelThumpStartTimes) — no other service this
@@ -110,8 +81,8 @@ interface StreamCardProps {
   liveSince?: number;
 }
 
-function StreamCard({ stream, following, onToggleFollow, onCast, casting, castActive, liveSince }: StreamCardProps) {
-  const onPress = () => {
+function StreamCard({ stream, following, onToggleFollow, onCast, onPlay, casting, castActive, liveSince }: StreamCardProps) {
+  const openInBrowser = () => {
     Linking.openURL(`${DEFAULT_CONFIG.rustlaUrl}${stream.url}`);
   };
   // The cast HLS-resolution trick (see streams/hlsResolver.ts) is only
@@ -119,7 +90,14 @@ function StreamCard({ stream, following, onToggleFollow, onCast, casting, castAc
   // services, so the button only appears where it can actually work.
   const canCast = stream.service === 'angelthump';
   return (
-    <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.8}>
+    <TouchableOpacity
+      style={styles.card}
+      // Twitch and AngelThump play in the app; long-press (or any other
+      // service) opens the strims.gg page instead.
+      onPress={() => (canPlayInApp(stream) ? onPlay(stream) : openInBrowser())}
+      onLongPress={openInBrowser}
+      activeOpacity={0.8}
+    >
       <Image source={{ uri: withThumbnailCacheBust(stream.thumbnail) }} style={styles.thumbnail} resizeMode="cover" />
       <View style={styles.cardMeta}>
         <Text style={styles.title} numberOfLines={1}>
@@ -174,81 +152,23 @@ function StreamCard({ stream, following, onToggleFollow, onCast, casting, castAc
   );
 }
 
-export default function StreamsScreen() {
+interface Props {
+  onPlay: (stream: Stream) => void;
+}
+
+export default function StreamsScreen({ onPlay }: Props) {
   const [streams, setStreams] = useState<Stream[]>([]);
   const [angelThumpStartTimes, setAngelThumpStartTimes] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [follows, setFollows] = useState<Set<string>>(new Set());
-  const [castingKey, setCastingKey] = useState<string | null>(null);
-  // The stream a region picker is currently showing for — set on cast tap,
-  // cleared once a region's picked (or the picker's dismissed). Only the
-  // "start casting" path needs this; stopping an active cast bypasses it.
-  const [regionPickerStream, setRegionPickerStream] = useState<Stream | null>(null);
-  // Which stream is actively loaded on the connected Cast device (distinct
-  // from castingKey, which is only true transiently while resolving/
-  // sending the load command) — drives the "currently casting" icon state
-  // and lets a second tap stop it instead of reloading.
-  const [activeCastKey, setActiveCastKey] = useState<string | null>(null);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const client = useRemoteMediaClient();
-  // A cast tap can happen before a device is connected yet (the user picks
-  // one from the dialog we open) — stash what to load once the session
-  // comes up, since `client` only becomes non-null after that happens.
-  const pendingCast = useRef<{ hlsUrl: string; stream: Stream } | null>(null);
+  const { castingKey, activeCastKey, toggleCast } = useCast();
 
   useEffect(() => {
     loadFollows().then(setFollows);
   }, []);
-
-  // The sender-side loadMedia() promise only confirms the receiver *got*
-  // the command, not that playback actually started — surfacing real
-  // player-state changes (and any idleReason on failure) needs this
-  // separate subscription.
-  useEffect(() => {
-    if (!client) {
-      // Session ended (disconnected/stopped from the device side, e.g. the
-      // Cast notification's stop button) — nothing is casting anymore.
-      setActiveCastKey(null);
-      return;
-    }
-    const sub = client.onMediaStatusUpdated(status => {
-      log.info(`media status: playerState=${status?.playerState} idleReason=${status?.idleReason ?? 'none'}`);
-      if (status?.playerState === 'idle') {
-        setActiveCastKey(null);
-      }
-    });
-    return () => sub.remove();
-  }, [client]);
-
-  const loadMediaOnClient = async (hlsUrl: string, stream: Stream) => {
-    log.info(`loading media: ${hlsUrl}`);
-    await client!.loadMedia({
-      mediaInfo: {
-        contentUrl: hlsUrl,
-        contentType: 'application/x-mpegURL',
-        streamType: MediaStreamType.LIVE,
-        // AngelThump serves fMP4/CMAF segments (.m4s + an EXT-X-MAP init
-        // segment), not classic MPEG2-TS. The Default Media Receiver needs
-        // this hint to decode fMP4 HLS — without it, loadMedia is
-        // acknowledged but the receiver silently never actually plays
-        // anything (no error surfaced back to the sender at all).
-        hlsVideoSegmentFormat: MediaHlsVideoSegmentFormat.FMP4,
-        metadata: { type: 'generic', title: stream.title, images: [{ url: stream.thumbnail }] },
-      },
-    });
-    setActiveCastKey(followKey(stream.service, stream.channel));
-  };
-
-  useEffect(() => {
-    if (client && pendingCast.current) {
-      const { hlsUrl, stream } = pendingCast.current;
-      pendingCast.current = null;
-      loadMediaOnClient(hlsUrl, stream).catch(err => log.warn('failed to load media on cast device', err));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client]);
 
   const load = useCallback(async (isRefresh: boolean) => {
     if (isRefresh) {
@@ -332,44 +252,6 @@ export default function StreamsScreen() {
     }
   };
 
-  const onCast = async (stream: Stream) => {
-    const key = followKey(stream.service, stream.channel);
-
-    if (key === activeCastKey && client) {
-      try {
-        await client.stop();
-        setActiveCastKey(null);
-      } catch (err) {
-        log.warn(`failed to stop casting ${stream.channel}`, err);
-      }
-      return;
-    }
-
-    setRegionPickerStream(stream);
-  };
-
-  // Called once a region's been picked (see the Modal below) — the actual
-  // resolve-and-load, previously the second half of onCast.
-  const onConfirmCastRegion = async (stream: Stream, regionCode: string) => {
-    setRegionPickerStream(null);
-    const key = followKey(stream.service, stream.channel);
-    setCastingKey(key);
-    try {
-      const hlsUrl = await resolveAngelThumpHls(stream.channel, regionCode);
-      log.info(`resolved ${stream.channel} (${regionCode}) -> ${hlsUrl}`);
-      if (client) {
-        await loadMediaOnClient(hlsUrl, stream);
-      } else {
-        pendingCast.current = { hlsUrl, stream };
-        await GoogleCast.showCastDialog();
-      }
-    } catch (err) {
-      log.warn(`failed to cast ${stream.channel}`, err);
-    } finally {
-      setCastingKey(null);
-    }
-  };
-
   if (loading) {
     return (
       <View style={styles.centered}>
@@ -390,61 +272,33 @@ export default function StreamsScreen() {
   }
 
   return (
-    <>
-      {/* Android's Cast SDK requires at least one CastButton mounted
-          somewhere for showCastDialog() to work — this one is invisible;
-          our own cast icon per-card drives the actual UI. */}
-      <CastButton style={styles.hiddenCastButton} />
-      <FlatList
-        style={styles.container}
-        data={streams}
-        keyExtractor={s => followKey(s.service, s.channel)}
-        renderItem={({ item }) => {
-          const key = followKey(item.service, item.channel);
-          return (
-            <StreamCard
-              stream={item}
-              following={follows.has(key)}
-              onToggleFollow={onToggleFollow}
-              onCast={onCast}
-              casting={castingKey === key}
-              castActive={activeCastKey === key}
-              liveSince={item.service === 'angelthump' ? angelThumpStartTimes.get(item.channel.toLowerCase()) : undefined}
-            />
-          );
-        }}
-        contentContainerStyle={styles.listContent}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => load(true)} tintColor="#e45e07" />}
-        ListEmptyComponent={
-          <View style={styles.centered}>
-            <Text style={styles.emptyText}>No one's streaming right now</Text>
-          </View>
-        }
-      />
-      <Modal visible={regionPickerStream !== null} transparent animationType="fade" onRequestClose={() => setRegionPickerStream(null)}>
-        <TouchableOpacity
-          style={styles.regionPickerBackdrop}
-          activeOpacity={1}
-          onPress={() => setRegionPickerStream(null)}
-        >
-          <View style={styles.regionPickerCard}>
-            <Text style={styles.regionPickerTitle}>Cast from</Text>
-            {ANGELTHUMP_REGIONS.map(region => (
-              <TouchableOpacity
-                key={region.code}
-                style={styles.regionOption}
-                onPress={() => regionPickerStream && onConfirmCastRegion(regionPickerStream, region.code)}
-              >
-                <Text style={styles.regionOptionText}>{region.label}</Text>
-              </TouchableOpacity>
-            ))}
-            <TouchableOpacity style={styles.regionCancel} onPress={() => setRegionPickerStream(null)}>
-              <Text style={styles.regionCancelText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
-      </Modal>
-    </>
+    <FlatList
+      style={styles.container}
+      data={streams}
+      keyExtractor={s => followKey(s.service, s.channel)}
+      renderItem={({ item }) => {
+        const key = followKey(item.service, item.channel);
+        return (
+          <StreamCard
+            stream={item}
+            following={follows.has(key)}
+            onToggleFollow={onToggleFollow}
+            onCast={toggleCast}
+            onPlay={onPlay}
+            casting={castingKey === key}
+            castActive={activeCastKey === key}
+            liveSince={item.service === 'angelthump' ? angelThumpStartTimes.get(item.channel.toLowerCase()) : undefined}
+          />
+        );
+      }}
+      contentContainerStyle={styles.listContent}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => load(true)} tintColor="#e45e07" />}
+      ListEmptyComponent={
+        <View style={styles.centered}>
+          <Text style={styles.emptyText}>No one's streaming right now</Text>
+        </View>
+      }
+    />
   );
 }
 
@@ -461,39 +315,6 @@ const styles = StyleSheet.create({
   },
   retryButtonText: { color: '#fff', fontWeight: '600' },
   listContent: { padding: 8 },
-  regionPickerBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  regionPickerCard: {
-    backgroundColor: '#1c1d24',
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 8,
-    width: 220,
-  },
-  regionPickerTitle: {
-    color: '#8291b2',
-    fontSize: 13,
-    fontWeight: '600',
-    textAlign: 'center',
-    paddingVertical: 8,
-  },
-  regionOption: {
-    paddingVertical: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#2a2b33',
-  },
-  regionOptionText: { color: '#fff', fontSize: 16, textAlign: 'center' },
-  regionCancel: {
-    paddingVertical: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#2a2b33',
-    marginTop: 4,
-  },
-  regionCancelText: { color: '#e45e07', fontSize: 15, fontWeight: '600', textAlign: 'center' },
   card: {
     flexDirection: 'row',
     backgroundColor: '#1c1e27',
@@ -520,40 +341,4 @@ const styles = StyleSheet.create({
   actionButton: { padding: 4 },
   actionIcon: { fontSize: 18, color: '#5c6273' },
   actionIconActive: { color: '#e45e07' },
-  hiddenCastButton: { width: 0, height: 0 },
-  // Taller box with a shorter screen than earlier attempts, specifically so
-  // the arcs below (up to 9px tall) have clearance to sit under the screen
-  // without overlapping it — that overlap was the bug in earlier attempts.
-  castIconBox: { width: 22, height: 20 },
-  castIconScreen: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 11,
-    borderWidth: 1.5,
-    borderRadius: 2,
-  },
-  castIconDot: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    width: 3,
-    height: 3,
-    borderRadius: 1.5,
-  },
-  // Standard wifi-icon CSS trick: a circle with only its bottom+left border
-  // colored (rest transparent) — that quadrant's visible stroke passes
-  // right through the bounding box's bottom-left corner, so anchoring the
-  // box at the same corner as the dot makes the arc read as radiating from
-  // it, bowing up and to the right.
-  castIconArc: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    borderColor: 'transparent',
-    borderRadius: 50,
-  },
-  castIconArcOuter: { width: 9, height: 9, borderBottomWidth: 1.3, borderLeftWidth: 1.3 },
-  castIconArcInner: { width: 5, height: 5, borderBottomWidth: 1.3, borderLeftWidth: 1.3 },
 });

@@ -63,14 +63,19 @@ export const ANGELTHUMP_REGIONS: { code: string; label: string }[] = [
   { code: 'sgp1', label: 'SGP' },
 ];
 
-const REGION_HOST_RE = /^https:\/\/[a-z]+\d\.angelthump\.com\//;
+// Any angelthump.com host: the master manifest now points at
+// video-cdn.angelthump.com, which redirects nowhere but serves a playlist
+// whose segment URLs are absolute and pinned to its own pick of region
+// (sfo1 from the US), so swapping only a `sfo1`-style host never matched and
+// region choice silently did nothing.
+const REGION_HOST_RE = /^https:\/\/[a-z0-9-]+\.angelthump\.com\//;
 
-// Swaps the edge server region in an already-resolved manifest URL (e.g.
-// `https://sfo1.angelthump.com/hls/...` -> `https://ams1.angelthump.com/hls/...`).
-// The path/stream-id portion is unaffected by region — only the host
-// changes — but this is unverified against every stream actually being
-// live on every region; a region a stream isn't replicated to will just
-// fail to load on the receiver like any other bad URL would.
+// Swaps the server in an already-resolved manifest URL (e.g.
+// `https://video-cdn.angelthump.com/hls/...` -> `https://ams1.angelthump.com/hls/...`).
+// Each regional host serves the same playlist path with its own segment
+// URLs (verified for sfo1/ams1/fra1), and answers playlist requests far
+// faster than video-cdn (0.4s vs 3.8s observed). A region a stream isn't
+// replicated to will just fail to load like any other bad URL would.
 export function withAngelThumpRegion(edgeUrl: string, regionCode: string): string {
   return edgeUrl.replace(REGION_HOST_RE, `https://${regionCode}.angelthump.com/`);
 }

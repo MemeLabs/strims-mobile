@@ -14,6 +14,7 @@ import {
   type TimestampFormat,
 } from '../storage/preferences';
 import pkg from '../../package.json';
+import { ANGELTHUMP_REGIONS } from '../streams/hlsResolver';
 
 interface Props {
   onClose: () => void;
@@ -34,6 +35,13 @@ const TIMESTAMP_OPTIONS: { value: TimestampFormat; label: string }[] = [
   { value: 'hms', label: '12:34:56' },
 ];
 
+const STREAM_DELAY_OPTIONS = [4, 6, 8, 10];
+
+const REGION_OPTIONS: { value: string | null; label: string }[] = [
+  { value: null, label: 'Auto' },
+  ...ANGELTHUMP_REGIONS.map(region => ({ value: region.code, label: region.label })),
+];
+
 export default function SettingsScreen({
   onClose,
   onLogout,
@@ -43,6 +51,8 @@ export default function SettingsScreen({
   const animateForever = usePreference('animateEmotesForever');
   const timestampFormat = usePreference('timestampFormat');
   const ignoredNicks = usePreference('ignoredNicks');
+  const streamDelaySeconds = usePreference('streamDelaySeconds');
+  const angelThumpRegion = usePreference('angelThumpRegion');
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
 
   useEffect(() => {
@@ -121,6 +131,44 @@ export default function SettingsScreen({
                   >
                     {option.label}
                   </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+
+        {/* In-app AngelThump playback only: Twitch's embed player manages
+            its own buffering and servers. */}
+        <View style={styles.emotesRow}>
+          <Text style={styles.emotesLabel}>Stream delay</Text>
+          <View style={styles.segmented}>
+            {STREAM_DELAY_OPTIONS.map(seconds => {
+              const selected = seconds === streamDelaySeconds;
+              return (
+                <TouchableOpacity
+                  key={seconds}
+                  style={[styles.segment, selected && styles.segmentSelected]}
+                  onPress={() => setPreference('streamDelaySeconds', seconds)}
+                >
+                  <Text style={[styles.segmentText, selected && styles.segmentTextSelected]}>{seconds}s</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+
+        <View style={[styles.emotesRow, styles.ignoredRow]}>
+          <Text style={styles.emotesLabel}>AngelThump server</Text>
+          <View style={[styles.segmented, styles.segmentedBelow]}>
+            {REGION_OPTIONS.map(option => {
+              const selected = option.value === angelThumpRegion;
+              return (
+                <TouchableOpacity
+                  key={option.label}
+                  style={[styles.segment, selected && styles.segmentSelected]}
+                  onPress={() => setPreference('angelThumpRegion', option.value)}
+                >
+                  <Text style={[styles.segmentText, selected && styles.segmentTextSelected]}>{option.label}</Text>
                 </TouchableOpacity>
               );
             })}
@@ -218,6 +266,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     overflow: 'hidden',
   },
+  segmentedBelow: { marginTop: 8 },
   segment: { paddingVertical: 6, paddingHorizontal: 10 },
   segmentSelected: { backgroundColor: '#132a3a' },
   segmentText: { color: '#888', fontSize: 13 },

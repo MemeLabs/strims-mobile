@@ -7,6 +7,21 @@ the release process itself.
 
 ## [Unreleased]
 
+### Added
+- Watch AngelThump and Twitch streams in the app: tap a stream to play it above chat, turn the
+  phone sideways for fullscreen, ✕ or back to close. Long-press a stream (or any other service)
+  to open it on strims.gg as before.
+- Cast button on the player for AngelThump streams; casting from the player or the list shows in
+  both, and the in-app player stops while that stream is on the TV.
+- Settings → Stream delay (how far behind live the AngelThump player stays, default 8s) and
+  AngelThump server (Auto or a fixed region) for in-app playback.
+- Watching a stream in the app sets your viewer state in chat and counts you as a rustler, the
+  same as watching on strims.gg.
+
+### Fixed
+- Choosing a Chromecast region did nothing: AngelThump's playlists moved to a host the region
+  swap didn't recognize, so every cast used AngelThump's default server.
+
 ## [0.3.1] - 2026-10-03
 
 ### Fixed

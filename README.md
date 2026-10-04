@@ -56,6 +56,10 @@ No iOS build yet — see [docs/releasing.md](docs/releasing.md) for why.
   as strims-live-extension).
 - Channel names are colored with the same deterministic per-channel scheme used in chat, so you
   can see at a glance what color a streamer's nick will be while they're watching.
+- Tap an AngelThump or Twitch stream to watch it above chat; turn the phone sideways for
+  fullscreen. It shows as your viewer state in chat, same as watching on strims.gg. Other services
+  (or a long-press) open the stream on strims.gg. The AngelThump player has a cast button, and its
+  delay behind live and server are in Settings.
 - Chromecast support for AngelThump streams (resolves past AngelThump's CORS-blocked master
   manifest to a castable edge URL; see [docs/architecture.md](docs/architecture.md)).
 
