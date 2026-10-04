@@ -7,6 +7,8 @@ the release process itself.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-03
+
 ### Added
 - Server button on the AngelThump player (shows the current one, e.g. `AMS`): pick Auto or a
   region and the stream reloads from it. Same setting as Settings → AngelThump server.
