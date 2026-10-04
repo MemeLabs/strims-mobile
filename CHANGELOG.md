@@ -7,6 +7,8 @@ the release process itself.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-03
+
 ### Fixed
 - Chat bouncing up and down by a line while a stream is open, starting whenever a message
   arrived: with the shorter chat area, the oldest rows were being unloaded and reloaded as the
