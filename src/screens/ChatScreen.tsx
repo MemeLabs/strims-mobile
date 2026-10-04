@@ -657,6 +657,14 @@ export default function ChatScreen({ jwt, emoteRefreshKey, onConnectedChange }: 
           // the oldest from the top. Without this, rows you're reading
           // slide upward while scrolled back.
           maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+          // Keep every row rendered (the list is capped at 200, see
+          // useChat.ts). FlatList's default window is 21 viewports tall; with
+          // a stream above chat the viewport is only ~480px, so the oldest
+          // rows fell outside it and were swapped for estimated-height
+          // spacers. Each pin to the bottom then moved the window edge, the
+          // estimate changed the content height, and that triggered another
+          // pin — chat bounced up and down by a row.
+          windowSize={101}
           onContentSizeChange={(_width, height) => {
             contentHeightRef.current = height;
             if (followingRef.current) {
