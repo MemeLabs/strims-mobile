@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, AppState, BackHandler, StatusBar, StyleSheet, View } from 'react-native';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import LoginScreen from './src/auth/LoginScreen';
 import ChatScreen from './src/screens/ChatScreen';
@@ -88,59 +89,61 @@ export default function App() {
   };
 
   return (
-    <SafeAreaProvider>
-      <StatusBar barStyle="light-content" />
-      <View style={styles.root}>
-        {booting ? (
-          <ActivityIndicator size="large" color="#8291b2" />
-        ) : jwt ? (
-          // Top inset is handled once here, above the title bar — the
-          // screens below no longer apply their own top safe-area edge.
-          <SafeAreaView style={styles.root} edges={['top']}>
-            {settingsVisible && (
-              <SettingsScreen
-                onClose={() => setSettingsVisible(false)}
-                onLogout={onLogout}
-                onRefreshEmotes={onRefreshEmotes}
-              />
-            )}
-            {/* Chat and streams stay mounted under Settings too, not just
-                across tab swaps — unmounting chat for Settings meant a fresh
-                socket + catch-up and a forced scroll-to-end on every return. */}
-            <View style={settingsVisible ? styles.hidden : styles.flexVisible}>
-              <TitleBar
-                onPressSettings={() => setSettingsVisible(true)}
-                updateAvailable={updateAvailable}
-                onPressUpdate={() => setUpdateModalVisible(true)}
-              />
-              <TabBar active={tab} onChange={setTab} chatConnected={chatConnected} />
-              <View style={tab === 'chat' ? styles.flexVisible : styles.hidden}>
-                <ChatScreen jwt={jwt} emoteRefreshKey={emoteRefreshKey} onConnectedChange={setChatConnected} />
+    <KeyboardProvider>
+      <SafeAreaProvider>
+        <StatusBar barStyle="light-content" />
+        <View style={styles.root}>
+          {booting ? (
+            <ActivityIndicator size="large" color="#8291b2" />
+          ) : jwt ? (
+            // Top inset is handled once here, above the title bar — the
+            // screens below no longer apply their own top safe-area edge.
+            <SafeAreaView style={styles.root} edges={['top']}>
+              {settingsVisible && (
+                <SettingsScreen
+                  onClose={() => setSettingsVisible(false)}
+                  onLogout={onLogout}
+                  onRefreshEmotes={onRefreshEmotes}
+                />
+              )}
+              {/* Chat and streams stay mounted under Settings too, not just
+                  across tab swaps — unmounting chat for Settings meant a fresh
+                  socket + catch-up and a forced scroll-to-end on every return. */}
+              <View style={settingsVisible ? styles.hidden : styles.flexVisible}>
+                <TitleBar
+                  onPressSettings={() => setSettingsVisible(true)}
+                  updateAvailable={updateAvailable}
+                  onPressUpdate={() => setUpdateModalVisible(true)}
+                />
+                <TabBar active={tab} onChange={setTab} chatConnected={chatConnected} />
+                <View style={tab === 'chat' ? styles.flexVisible : styles.hidden}>
+                  <ChatScreen jwt={jwt} emoteRefreshKey={emoteRefreshKey} onConnectedChange={setChatConnected} />
+                </View>
+                <View style={tab === 'streams' ? styles.flexVisible : styles.hidden}>
+                  <StreamsScreen />
+                </View>
               </View>
-              <View style={tab === 'streams' ? styles.flexVisible : styles.hidden}>
-                <StreamsScreen />
-              </View>
-            </View>
-          </SafeAreaView>
-        ) : (
-          // Needs the same top-inset treatment as the authed view above —
-          // without it, the WebView's content (Twitch's own page, which has
-          // no notion of our status bar) starts right at y=0 and its header
-          // collides with the status bar.
-          <SafeAreaView style={styles.root} edges={['top']}>
-            <LoginScreen onLoggedIn={setJwt} />
-          </SafeAreaView>
-        )}
-      </View>
-      <UpdateModal
-        update={updateModalVisible ? updateAvailable : null}
-        onClose={() => setUpdateModalVisible(false)}
-        onConfirm={() => {
-          setUpdateModalVisible(false);
-          updateAvailable && installUpdate(updateAvailable);
-        }}
-      />
-    </SafeAreaProvider>
+            </SafeAreaView>
+          ) : (
+            // Needs the same top-inset treatment as the authed view above —
+            // without it, the WebView's content (Twitch's own page, which has
+            // no notion of our status bar) starts right at y=0 and its header
+            // collides with the status bar.
+            <SafeAreaView style={styles.root} edges={['top']}>
+              <LoginScreen onLoggedIn={setJwt} />
+            </SafeAreaView>
+          )}
+        </View>
+        <UpdateModal
+          update={updateModalVisible ? updateAvailable : null}
+          onClose={() => setUpdateModalVisible(false)}
+          onConfirm={() => {
+            setUpdateModalVisible(false);
+            updateAvailable && installUpdate(updateAvailable);
+          }}
+        />
+      </SafeAreaProvider>
+    </KeyboardProvider>
   );
 }
 

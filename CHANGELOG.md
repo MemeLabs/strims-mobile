@@ -7,6 +7,11 @@ the release process itself.
 
 ## [Unreleased]
 
+### Fixed
+- Chat no longer jumps up and down while typing. The keyboard, input row and messages now
+  move together frame by frame (`react-native-keyboard-controller`), and the "More messages"
+  pill and autocomplete bar float over the chat instead of resizing it each time they appear.
+
 ## [0.3.0] - 2026-10-02
 
 ### Added

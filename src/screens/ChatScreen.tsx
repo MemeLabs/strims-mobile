@@ -3,19 +3,18 @@ import {
   Animated,
   FlatList,
   Image,
-  Keyboard,
-  KeyboardAvoidingView,
   Linking,
   Modal,
-  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
+  type ScrollViewProps,
   type TextInputInstance,
 } from 'react-native';
+import { KeyboardChatScrollView, KeyboardEvents, KeyboardStickyView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useChat } from '../chat/useChat';
 import { getEmoteIndexUpdatedAt, loadEmoteIndex, subscribeToEmoteIndex, type EmoteInfo } from '../chat/emotes';
@@ -34,10 +33,7 @@ import {
 import AnimatedEmote from '../components/AnimatedEmote';
 import NickMenu from '../components/NickMenu';
 import { loadEmoteUsageCounts, recordEmoteUsage } from '../chat/emoteUsage';
-import { makeLogger } from '../log';
 import type { ChatMessage, ViewerChannel } from '../chat/types';
-
-const log = makeLogger('chat-screen');
 
 interface Props {
   jwt: string;
@@ -458,13 +454,9 @@ export default function ChatScreen({ jwt, emoteRefreshKey, onConnectedChange }: 
     setSelection({ start: cursor, end: cursor });
     inputRef.current?.focus();
   };
-  // Android's forced edge-to-edge display (targetSdk 35+) breaks the legacy
-  // windowSoftInputMode="adjustResize" window-resize behavior, so instead of
-  // relying on that (or KeyboardAvoidingView, which relies on it too), we
-  // measure the keyboard directly and shift the layout ourselves.
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const listRef = useRef<FlatList<DisplayItem>>(null);
   const insets = useSafeAreaInsets();
+  const [inputRowHeight, setInputRowHeight] = useState(0);
   // "Follow mode": while true, the list stays pinned to the newest message.
   // Only the user's own finger can turn it off (a drag, or the fling right
   // after one). Scroll events the user didn't cause can only turn it back
@@ -484,9 +476,12 @@ export default function ChatScreen({ jwt, emoteRefreshKey, onConnectedChange }: 
   // short, cutting off the newest message.
   const contentHeightRef = useRef(0);
   const viewportHeightRef = useRef(0);
+  // Keyboard space KeyboardChatScrollView adds below the content (synthetic
+  // on Android, so it isn't in contentSize). The real bottom offset includes it.
+  const bottomInsetRef = useRef(0);
   // Only refs and a state setter inside, so these are stable for effects.
   const scrollToBottom = useCallback((animated: boolean) => {
-    const offset = Math.max(0, contentHeightRef.current - viewportHeightRef.current);
+    const offset = Math.max(0, contentHeightRef.current + bottomInsetRef.current - viewportHeightRef.current);
     listRef.current?.scrollToOffset({ offset, animated });
   }, []);
 
@@ -510,7 +505,7 @@ export default function ChatScreen({ jwt, emoteRefreshKey, onConnectedChange }: 
       // Hidden (display: none). Offsets are meaningless.
       return;
     }
-    const distanceFromBottom = contentSize.height - layoutMeasurement.height - contentOffset.y;
+    const distanceFromBottom = contentSize.height + bottomInsetRef.current - layoutMeasurement.height - contentOffset.y;
     if (distanceFromBottom < NEAR_BOTTOM_THRESHOLD) {
       followingRef.current = true;
       setHasNewMessages(false);
@@ -520,8 +515,10 @@ export default function ChatScreen({ jwt, emoteRefreshKey, onConnectedChange }: 
   };
 
   // While following, any change in content or viewport size (new message,
-  // an emote finishing loading, keyboard, coming back from another tab)
-  // re-pins to the bottom; this is also what corrects a short landing.
+  // an emote finishing loading, coming back from another tab) re-pins to the
+  // bottom; this is also what corrects a short landing. The keyboard isn't
+  // one of these: KeyboardChatScrollView moves the content with it, frame by
+  // frame on the UI thread, without changing the list's size.
   const onListSizeChange = () => {
     if (followingRef.current && !draggingRef.current) {
       flingRef.current = false;
@@ -529,24 +526,42 @@ export default function ChatScreen({ jwt, emoteRefreshKey, onConnectedChange }: 
     }
   };
 
+  // Opening the keyboard means you're about to type: jump to newest. Waits
+  // for the open to finish: KeyboardChatScrollView drives the scroll offset
+  // every frame while the keyboard slides, so a jump made earlier is
+  // overwritten. Already following means already there. "Did show" also
+  // fires again on height changes (emoji panel etc.), which aren't an open.
   useEffect(() => {
-    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const showSub = Keyboard.addListener(showEvent, e => {
-      log.info(`${showEvent} height=${e.endCoordinates?.height}`);
-      setKeyboardHeight(e.endCoordinates?.height ?? 0);
-      // Opening the keyboard means you're about to type: jump to newest.
-      scrollToEnd(true);
+    let open = false;
+    const showSub = KeyboardEvents.addListener('keyboardDidShow', () => {
+      if (!open && !followingRef.current) {
+        scrollToEnd(true);
+      }
+      open = true;
     });
-    const hideSub = Keyboard.addListener(hideEvent, () => {
-      log.info(hideEvent);
-      setKeyboardHeight(0);
+    const hideSub = KeyboardEvents.addListener('keyboardDidHide', () => {
+      open = false;
     });
     return () => {
       showSub.remove();
       hideSub.remove();
     };
   }, [scrollToEnd]);
+
+  const renderScrollComponent = useCallback(
+    (props: ScrollViewProps) => (
+      <KeyboardChatScrollView
+        {...props}
+        // The input row and the list both already clear the nav bar
+        // (insets.bottom), so the keyboard only needs to push past the rest.
+        offset={insets.bottom}
+        onContentInsetChange={inset => {
+          bottomInsetRef.current = inset.bottom;
+        }}
+      />
+    ),
+    [insets.bottom],
+  );
 
   // After every catch-up (initial load + every reconnect): if the user is
   // near the bottom already, follow along as before — waiting a tick lets
@@ -627,10 +642,14 @@ export default function ChatScreen({ jwt, emoteRefreshKey, onConnectedChange }: 
           </TouchableOpacity>
         </View>
       )}
-      <KeyboardWrapper keyboardHeight={keyboardHeight} navBarInset={insets.bottom}>
+      <View style={styles.chatArea}>
         <FlatList
           ref={listRef}
-          style={styles.list}
+          // Leaves room for the input row docked below. Only the input row's
+          // own height counts: the pill and suggestion bar float over the list
+          // so showing them never resizes it.
+          style={[styles.list, { marginBottom: inputRowHeight }]}
+          renderScrollComponent={renderScrollComponent}
           data={displayItems}
           keyExtractor={item => item.key}
           renderItem={renderItem}
@@ -664,73 +683,82 @@ export default function ChatScreen({ jwt, emoteRefreshKey, onConnectedChange }: 
           scrollEventThrottle={16}
           contentContainerStyle={styles.listContent}
         />
-        {hasNewMessages && (
-          <TouchableOpacity style={styles.newMessagesPill} onPress={() => scrollToEnd(true)}>
-            <Text style={styles.newMessagesPillText}>More messages ↓</Text>
-          </TouchableOpacity>
-        )}
-        {suggestions.length > 0 && (
-          <ScrollView
-            horizontal
-            keyboardShouldPersistTaps="always"
-            style={styles.suggestionBar}
-            contentContainerStyle={styles.suggestionBarContent}
-          >
-            {suggestions.map(s => (
-              <TouchableOpacity
-                key={`${s.isEmote ? 'e' : 'u'}:${s.text}`}
-                style={styles.suggestionChip}
-                onPress={() => applySuggestion(s)}
-              >
-                {s.isEmote && emotes.get(s.text) && (
-                  <AnimatedEmote
-                    emote={emotes.get(s.text)!}
-                    width={SUGGESTION_EMOTE_SIZE}
-                    height={SUGGESTION_EMOTE_SIZE}
-                    accessibilityLabel={s.text}
-                  />
-                )}
-                <Text style={styles.suggestionText}>{s.text}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        )}
-        <View
-          style={[
-            styles.inputRow,
-            // With 3-button nav, the nav bar stays visible above the
-            // keyboard rather than being covered by it, so this padding is
-            // needed whether or not the keyboard is open.
-            { paddingBottom: insets.bottom + 8 },
-          ]}
+        <KeyboardStickyView
+          style={styles.inputDock}
+          // The keyboard height includes the nav bar under it, which the
+          // input row already pads for.
+          offset={{ opened: insets.bottom }}
+          pointerEvents="box-none"
         >
-          <TextInput
-            ref={inputRef}
-            style={styles.input}
-            value={draft}
-            onChangeText={setDraft}
-            onSelectionChange={e => setSelection(e.nativeEvent.selection)}
-            placeholder="Message #strims"
-            placeholderTextColor="#5c6273"
-            onSubmitEditing={() => onSend()}
-            returnKeyType="send"
-          />
-          <TouchableOpacity style={styles.emoteButton} onPress={() => setEmotePickerVisible(true)}>
-            {emotes.get(topEmoteName) ? (
-              <AnimatedEmote emote={emotes.get(topEmoteName)!} width={24} height={24} accessibilityLabel={topEmoteName} />
-            ) : (
-              // Bundled with the app (not fetched) so the button has something
-              // to show immediately on a cold start, before the network-loaded
-              // emote index resolves — same LUL that'd show anyway once it does,
-              // just not left blank/placeholder-text in the meantime.
-              <Image source={require('../assets/emotes/LUL.png')} style={styles.emoteButtonFallback} />
-            )}
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.sendButton} onPress={() => onSend()}>
-            <Text style={styles.sendButtonText}>Send</Text>
-          </TouchableOpacity>
-        </View>
-      </KeyboardWrapper>
+          {hasNewMessages && (
+            <TouchableOpacity style={styles.newMessagesPill} onPress={() => scrollToEnd(true)}>
+              <Text style={styles.newMessagesPillText}>More messages ↓</Text>
+            </TouchableOpacity>
+          )}
+          {suggestions.length > 0 && (
+            <ScrollView
+              horizontal
+              keyboardShouldPersistTaps="always"
+              style={styles.suggestionBar}
+              contentContainerStyle={styles.suggestionBarContent}
+            >
+              {suggestions.map(s => (
+                <TouchableOpacity
+                  key={`${s.isEmote ? 'e' : 'u'}:${s.text}`}
+                  style={styles.suggestionChip}
+                  onPress={() => applySuggestion(s)}
+                >
+                  {s.isEmote && emotes.get(s.text) && (
+                    <AnimatedEmote
+                      emote={emotes.get(s.text)!}
+                      width={SUGGESTION_EMOTE_SIZE}
+                      height={SUGGESTION_EMOTE_SIZE}
+                      accessibilityLabel={s.text}
+                    />
+                  )}
+                  <Text style={styles.suggestionText}>{s.text}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          )}
+          <View
+            style={[
+              styles.inputRow,
+              // With 3-button nav, the nav bar stays visible below the
+              // keyboard, so this padding is needed whether or not the
+              // keyboard is open (see the offset above).
+              { paddingBottom: insets.bottom + 8 },
+            ]}
+            onLayout={e => setInputRowHeight(e.nativeEvent.layout.height)}
+          >
+            <TextInput
+              ref={inputRef}
+              style={styles.input}
+              value={draft}
+              onChangeText={setDraft}
+              onSelectionChange={e => setSelection(e.nativeEvent.selection)}
+              placeholder="Message #strims"
+              placeholderTextColor="#5c6273"
+              onSubmitEditing={() => onSend()}
+              returnKeyType="send"
+            />
+            <TouchableOpacity style={styles.emoteButton} onPress={() => setEmotePickerVisible(true)}>
+              {emotes.get(topEmoteName) ? (
+                <AnimatedEmote emote={emotes.get(topEmoteName)!} width={24} height={24} accessibilityLabel={topEmoteName} />
+              ) : (
+                // Bundled with the app (not fetched) so the button has something
+                // to show immediately on a cold start, before the network-loaded
+                // emote index resolves — same LUL that'd show anyway once it does,
+                // just not left blank/placeholder-text in the meantime.
+                <Image source={require('../assets/emotes/LUL.png')} style={styles.emoteButtonFallback} />
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.sendButton} onPress={() => onSend()}>
+              <Text style={styles.sendButtonText}>Send</Text>
+            </TouchableOpacity>
+          </View>
+        </KeyboardStickyView>
+      </View>
       <Modal visible={tooltipVisible} transparent animationType="fade">
         <View style={styles.tooltipOverlay} pointerEvents="none">
           <View style={styles.tooltip}>
@@ -889,33 +917,6 @@ function EmotePicker({ visible, emotes, usageCounts, windowCounts, onPick, onDis
   );
 }
 
-interface KeyboardWrapperProps {
-  keyboardHeight: number;
-  navBarInset: number;
-  children: React.ReactNode;
-}
-
-// On Android we already track the keyboard height ourselves (see
-// ChatScreen's keyboardDidShow/Hide listener) — using KeyboardAvoidingView
-// there too means two independent mechanisms fighting over the same layout,
-// which was masking our own adjustment. Plain View + manual marginBottom on
-// Android; the real KeyboardAvoidingView on iOS, where 'padding' behavior is
-// reliable and there's no adjustResize/edge-to-edge conflict to work around.
-function KeyboardWrapper({ keyboardHeight, navBarInset, children }: KeyboardWrapperProps) {
-  if (Platform.OS === 'android') {
-    // keyboardDidShow's reported height is just the IME's own height — with
-    // 3-button nav the nav bar sits below the keyboard, not covered by it,
-    // so it has to be added on top or the input ends up under the buttons.
-    const marginBottom = keyboardHeight > 0 ? keyboardHeight + navBarInset : 0;
-    return <View style={[styles.keyboardArea, { marginBottom }]}>{children}</View>;
-  }
-  return (
-    <KeyboardAvoidingView style={styles.keyboardArea} behavior="padding" keyboardVerticalOffset={90}>
-      {children}
-    </KeyboardAvoidingView>
-  );
-}
-
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#15161c' },
   // flex: 1 (not position: 'absolute') — inside a Modal, absolute
@@ -949,7 +950,10 @@ const styles = StyleSheet.create({
   emotePickerTitle: { color: '#e6e8f0', fontSize: 15, fontWeight: '600', marginBottom: 8 },
   emotePickerRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 },
   emotePickerRowText: { color: '#e6e8f0', fontSize: 14 },
-  keyboardArea: { flex: 1 },
+  chatArea: { flex: 1 },
+  // Docked over the bottom of chatArea so the pill and suggestion bar stack
+  // upward over the list instead of taking space from it.
+  inputDock: { position: 'absolute', left: 0, right: 0, bottom: 0 },
   list: { flex: 1 },
   statusBar: {
     backgroundColor: '#3a2f1f',
@@ -1007,7 +1011,6 @@ const styles = StyleSheet.create({
   link: { color: '#4c9fff', textDecorationLine: 'underline' },
   newMessagesPill: {
     alignSelf: 'center',
-    marginTop: -14,
     marginBottom: 6,
     backgroundColor: '#4c6fff',
     borderRadius: 14,
